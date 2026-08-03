@@ -1,91 +1,89 @@
 import assert from "node:assert/strict";
-import { access, readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const developmentPreviewMeta =
-  /<meta(?=[^>]*\bname=["']codex-preview["'])(?=[^>]*\bcontent=["']development["'])[^>]*>/i;
-const templateRoot = new URL("../", import.meta.url);
-const previewRoot = new URL("../app/_sites-preview/", import.meta.url);
+const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
-    }),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
-      },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
-}
-
-test("server-renders the starter loading skeleton", async () => {
-  const response = await render();
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-
-  const html = await response.text();
-  assert.match(html, developmentPreviewMeta);
-  assert.match(html, /<title>Your site is taking shape<\/title>/i);
-  assert.match(html, /Building your site/);
-  assert.match(html, /Your site is taking shape/);
-  assert.match(
-    html,
-    /Your first version will appear here automatically when it’s ready\./,
-  );
-  assert.doesNotMatch(html, /Codex/);
-  assert.match(html, /react-loading-skeleton/);
-  assert.match(html, /role="status"/);
-});
-
-test("keeps the loading skeleton scoped and disposable", async () => {
-  const [preview, css, page, layout, packageJson, files] = await Promise.all([
-    readFile(new URL("SkeletonPreview.tsx", previewRoot), "utf8"),
-    readFile(new URL("preview.css", previewRoot), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../package.json", import.meta.url), "utf8"),
-    readdir(previewRoot),
+test("new accounts start with an empty asset list", async () => {
+  const [dashboard, register, readme] = await Promise.all([
+    read("app/Dashboard.tsx"),
+    read("app/api/auth/register/route.ts"),
+    read("README.md"),
   ]);
 
-  assert.deepEqual(files.sort(), ["SkeletonPreview.tsx", "preview.css"]);
-  assert.match(preview, /from "react-loading-skeleton"/);
-  assert.match(preview, /baseColor="#eceae7"/);
-  assert.match(preview, /highlightColor="#f9f8f6"/);
-  assert.match(preview, /duration=\{2\.8\}/);
-  assert.match(preview, /sites-skeleton-search-placeholder/);
-  assert.match(packageJson, /"react-loading-skeleton": "3\.5\.0"/);
+  assert.match(dashboard, /useState<Asset\[\]>\(\[\]\)/);
+  assert.match(dashboard, /账本还是空的/);
+  assert.doesNotMatch(dashboard, /fallbackAssets|贵州茅台|三年期定期存款/);
+  assert.match(register, /INSERT INTO users/);
+  assert.doesNotMatch(register, /INSERT INTO assets|seed/i);
+  assert.match(readme, /新注册用户从空账本开始，不会自动生成示例资产/);
+});
 
-  const shellIndex = preview.indexOf('className="sites-skeleton-shell"');
-  const statusIndex = preview.indexOf('className="sites-skeleton-status"');
-  assert.ok(shellIndex >= 0 && statusIndex > shellIndex);
-  assert.match(css, /position:\s*fixed/);
-  assert.match(css, /inset:\s*0/);
-  assert.match(css, /opacity:\s*0\.52/);
-  assert.match(css, /prefers-reduced-motion:\s*reduce/);
-  assert.doesNotMatch(css, /#020617|canvas|pets|progress/i);
-  assert.doesNotMatch(
-    preview,
-    /loading-spinner|status-mark|status-progress|canvas|cookie|random/i,
-  );
+test("asset reads, writes, updates, and deletes are scoped to the signed-in user", async () => {
+  const route = await read("app/api/assets/route.ts");
 
-  assert.match(page, /export const metadata:\s*Metadata/);
-  assert.match(page, /"codex-preview": "development"/);
-  assert.match(page, /<SkeletonPreview \/>/);
-  assert.match(layout, /title:\s*"Starter Project"/);
-  assert.doesNotMatch(layout, /codex-preview|_sites-preview|themeColor|\bViewport\b/);
-  assert.doesNotMatch(css, /(^|\s)(html|body)\s*\{/m);
+  assert.match(route, /getAuthenticatedUser/);
+  assert.match(route, /WHERE user_id = \?/);
+  assert.match(route, /INSERT INTO assets \(user_id,/);
+  assert.match(route, /DELETE FROM assets WHERE id = \? AND user_id = \?/);
+  assert.match(route, /UPDATE assets SET annual_rate = \? WHERE id = \? AND user_id = \?/);
+  assert.match(route, /UPDATE assets SET amount = \?, currency = \? WHERE id = \? AND user_id = \?/);
+  assert.match(route, /if \(!result\.meta\.changes\).*404/);
+  assert.doesNotMatch(route, /seedIfEmpty|sample-assets|贵州茅台/);
+});
 
-  await assert.rejects(
-    access(new URL("public/_sites-preview", templateRoot)),
-  );
+test("market-rate sync is persisted and delete updates the visible list", async () => {
+  const [dashboard, market] = await Promise.all([
+    read("app/Dashboard.tsx"),
+    read("app/api/market/route.ts"),
+  ]);
+
+  assert.match(dashboard, /method: "PATCH"/);
+  assert.match(dashboard, /body: JSON\.stringify\(\{ id: asset\.id, annualRate \}\)/);
+  assert.match(dashboard, /method: "DELETE"/);
+  assert.match(dashboard, /current\.filter\(\(item\) => item\.id !== asset\.id\)/);
+  assert.match(dashboard, /setAssets\((?:data|assetData)\.assets \?\? \[\]\)/);
+  assert.match(dashboard, /例如 510300、QQQ、VOO/);
+  assert.match(market, /isUsSecurityCode/);
+  assert.match(market, /`us\$\{resolvedCode\}`/);
+  assert.match(market, /腾讯证券美股历史行情/);
+});
+
+test("local authentication uses hashed passwords and server-only session cookies", async () => {
+  const [auth, schema] = await Promise.all([
+    read("db/auth.ts"),
+    read("db/schema.ts"),
+  ]);
+
+  assert.match(auth, /PBKDF2/);
+  assert.match(auth, /SHA-256/);
+  assert.match(auth, /HttpOnly; SameSite=Lax/);
+  assert.match(auth, /sessions\.token_hash/);
+  assert.match(schema, /sqliteTable\("users"/);
+  assert.match(schema, /sqliteTable\("sessions"/);
+  assert.match(schema, /references\(\(\) => users\.id/);
+});
+
+test("multi-currency assets are persisted and totals are converted with latest rates", async () => {
+  const [dashboard, assetsRoute, ratesRoute, schema, migration] = await Promise.all([
+    read("app/Dashboard.tsx"),
+    read("app/api/assets/route.ts"),
+    read("app/api/exchange-rates/route.ts"),
+    read("db/schema.ts"),
+    read("drizzle/0002_uneven_gunslinger.sql"),
+  ]);
+
+  assert.match(dashboard, /name="currency"/);
+  assert.match(dashboard, /toCny\(asset, exchangeRates\)/);
+  assert.match(dashboard, /总资产 · 折合人民币/);
+  assert.match(dashboard, /外币按当前汇率不变测算/);
+  assert.match(dashboard, /仅可修改币种和当前市值/);
+  assert.match(dashboard, /资产金额与币种已保存/);
+  assert.match(dashboard, /记录资产/);
+  assert.match(assetsRoute, /supportedCurrencies/);
+  assert.match(assetsRoute, /amount, currency, annual_rate/);
+  assert.match(ratesRoute, /api\.frankfurter\.dev\/v2\/rates/);
+  assert.match(ratesRoute, /rates\[currency\] = 1 \/ row\.rate/);
+  assert.match(schema, /currency: text\("currency"\)\.notNull\(\)\.default\("CNY"\)/);
+  assert.match(migration, /ADD `currency` text DEFAULT 'CNY' NOT NULL/);
 });

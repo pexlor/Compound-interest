@@ -1,0 +1,1 @@
+ALTER TABLE `assets` ADD `currency` text DEFAULT 'CNY' NOT NULL;

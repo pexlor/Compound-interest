@@ -1,9 +1,27 @@
 type FundPoint = { FSRQ: string; DWJZ: string; LJJZ: string };
 
-function stockSymbol(code: string) {
+function domesticStockSymbol(code: string) {
   if (/^(5|6|9)/.test(code)) return `sh${code}`;
   if (/^(0|1|2|3)/.test(code)) return `sz${code}`;
   return code;
+}
+
+function isUsSecurityCode(code: string) {
+  return /^[A-Z][A-Z0-9.-]{0,14}$/.test(code);
+}
+
+async function resolveStockSymbol(code: string) {
+  if (!isUsSecurityCode(code)) return domesticStockSymbol(code);
+
+  const lookupSymbol = `us${code}`;
+  const lookupUrl = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(lookupSymbol)},day,,,2,qfq`;
+  const response = await fetch(lookupUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
+  if (!response.ok) throw new Error("行情服务暂时不可用");
+  const json = (await response.json()) as {
+    data?: Record<string, { qt?: Record<string, (string | number)[]> }>;
+  };
+  const resolvedCode = String(json.data?.[lookupSymbol]?.qt?.[lookupSymbol]?.[2] ?? "").trim();
+  return resolvedCode ? `us${resolvedCode}` : lookupSymbol;
 }
 
 function annualize(start: number, end: number, days: number) {
@@ -13,8 +31,9 @@ function annualize(start: number, end: number, days: number) {
 
 async function stockReturn(code: string, days: number) {
   const count = Math.min(1250, Math.max(30, Math.ceil(days * 0.72)));
-  const symbol = stockSymbol(code);
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,${count},qfq`;
+  const isUsSecurity = isUsSecurityCode(code);
+  const symbol = await resolveStockSymbol(code);
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(symbol)},day,,,${count},qfq`;
   const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
   if (!response.ok) throw new Error("行情服务暂时不可用");
   const json = (await response.json()) as {
@@ -32,7 +51,7 @@ async function stockReturn(code: string, days: number) {
     periodReturn: (end / start - 1) * 100,
     startDate: first[0],
     endDate: last[0],
-    source: "腾讯证券历史复权行情",
+    source: isUsSecurity ? "腾讯证券美股历史行情" : "腾讯证券历史复权行情",
   };
 }
 
@@ -81,12 +100,13 @@ async function fundReturn(code: string, days: number, isMoney: boolean) {
 
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
-  const code = params.get("code")?.trim() ?? "";
+  const rawCode = params.get("code")?.trim() ?? "";
+  const code = /^[a-z]/i.test(rawCode) ? rawCode.toUpperCase() : rawCode;
   const category = params.get("category") ?? "stock";
   const days = Math.min(1825, Math.max(30, Number(params.get("days")) || 365));
   if (!code) return Response.json({ error: "请输入代码" }, { status: 400 });
   try {
-    const result = category === "stock" || (category === "fund" && /^[15]/.test(code))
+    const result = category === "stock" || (category === "fund" && (/^[15]/.test(code) || isUsSecurityCode(code)))
       ? await stockReturn(code, days)
       : await fundReturn(code, days, category === "money");
     return Response.json(result);

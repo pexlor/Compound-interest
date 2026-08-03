@@ -1,36 +1,20 @@
 import { getAssetsDb, type AssetRow } from "../../../db/assets";
+import { getAuthenticatedUser } from "../../../db/auth";
 
-const samples = [
-  ["贵州茅台", "stock", "600519", 28640000, 8.6, "核心持仓"],
-  ["沪深300ETF", "fund", "510300", 19860000, 6.8, "宽基配置"],
-  ["稳健货币基金", "money", "000198", 12800000, 1.52, "流动资金"],
-  ["三年期定期存款", "deposit", null, 30000000, 2.6, "2028 年到期"],
-  ["住房公积金", "housing", null, 16000000, 1.5, "每月持续缴存"],
-  ["自住房产", "fixed", null, 40800000, 0, "按保守估值记录"],
-] as const;
+const supportedCurrencies = new Set(["CNY", "USD", "HKD", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "CHF"]);
 
-async function seedIfEmpty(db: D1Database) {
-  await db.prepare(
-    "UPDATE assets SET name = '沪深300ETF', code = '510300' WHERE name = '沪深300指数基金' AND code = '000300'"
-  ).run();
-  const count = await db.prepare("SELECT COUNT(*) AS count FROM assets").first<{ count: number }>();
-  if ((count?.count ?? 0) > 0) return;
-  await db.batch(
-    samples.map((item) =>
-      db.prepare(
-        "INSERT INTO assets (name, category, code, amount, annual_rate, note) VALUES (?, ?, ?, ?, ?, ?)"
-      ).bind(...item)
-    )
-  );
+function unauthorized() {
+  return Response.json({ error: "请先登录" }, { status: 401 });
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const user = await getAuthenticatedUser(request);
+    if (!user) return unauthorized();
     const db = await getAssetsDb();
-    await seedIfEmpty(db);
     const result = await db.prepare(
-      "SELECT id, name, category, code, amount, annual_rate, note, created_at FROM assets ORDER BY id"
-    ).all<AssetRow>();
+      "SELECT id, user_id, name, category, code, amount, currency, annual_rate, note, created_at FROM assets WHERE user_id = ? ORDER BY id"
+    ).bind(user.id).all<AssetRow>();
     return Response.json({ assets: result.results });
   } catch (error) {
     return Response.json(
@@ -42,28 +26,37 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    const user = await getAuthenticatedUser(request);
+    if (!user) return unauthorized();
     const body = (await request.json()) as Partial<{
       name: string;
       category: string;
       code: string;
       amount: number;
+      currency: string;
       annualRate: number;
       note: string;
     }>;
     const name = body.name?.trim();
     const category = body.category?.trim();
+    const currency = body.currency?.trim().toUpperCase() || "CNY";
     const amount = Math.round(Number(body.amount) * 100);
     if (!name || !category || !Number.isFinite(amount) || amount <= 0) {
       return Response.json({ error: "请填写有效的资产名称和金额" }, { status: 400 });
     }
+    if (!supportedCurrencies.has(currency)) {
+      return Response.json({ error: "暂不支持这个计价币种" }, { status: 400 });
+    }
     const db = await getAssetsDb();
     const row = await db.prepare(
-      "INSERT INTO assets (name, category, code, amount, annual_rate, note) VALUES (?, ?, ?, ?, ?, ?) RETURNING id, name, category, code, amount, annual_rate, note, created_at"
+      "INSERT INTO assets (user_id, name, category, code, amount, currency, annual_rate, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, user_id, name, category, code, amount, currency, annual_rate, note, created_at"
     ).bind(
+      user.id,
       name,
       category,
       body.code?.trim() || null,
       amount,
+      currency,
       Number(body.annualRate) || 0,
       body.note?.trim() || ""
     ).first<AssetRow>();
@@ -77,9 +70,49 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const user = await getAuthenticatedUser(request);
+  if (!user) return unauthorized();
   const id = Number(new URL(request.url).searchParams.get("id"));
   if (!Number.isInteger(id)) return Response.json({ error: "无效资产" }, { status: 400 });
   const db = await getAssetsDb();
-  await db.prepare("DELETE FROM assets WHERE id = ?").bind(id).run();
+  const result = await db.prepare("DELETE FROM assets WHERE id = ? AND user_id = ?").bind(id, user.id).run();
+  if (!result.meta.changes) return Response.json({ error: "资产不存在" }, { status: 404 });
   return Response.json({ ok: true });
+}
+
+export async function PATCH(request: Request) {
+  const user = await getAuthenticatedUser(request);
+  if (!user) return unauthorized();
+  const body = (await request.json()) as { id?: number; annualRate?: number; amount?: number; currency?: string };
+  const id = Number(body.id);
+  if (!Number.isInteger(id)) {
+    return Response.json({ error: "无效资产" }, { status: 400 });
+  }
+  const db = await getAssetsDb();
+
+  if (body.amount !== undefined || body.currency !== undefined) {
+    const amount = Math.round(Number(body.amount) * 100);
+    const currency = body.currency?.trim().toUpperCase() || "";
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return Response.json({ error: "请填写有效的当前市值" }, { status: 400 });
+    }
+    if (!supportedCurrencies.has(currency)) {
+      return Response.json({ error: "暂不支持这个计价币种" }, { status: 400 });
+    }
+    const result = await db.prepare(
+      "UPDATE assets SET amount = ?, currency = ? WHERE id = ? AND user_id = ?"
+    ).bind(amount, currency, id, user.id).run();
+    if (!result.meta.changes) return Response.json({ error: "资产不存在" }, { status: 404 });
+    return Response.json({ ok: true, amount, currency });
+  }
+
+  const annualRate = Number(body.annualRate);
+  if (!Number.isFinite(annualRate) || Math.abs(annualRate) > 1000) {
+    return Response.json({ error: "无效的收益率数据" }, { status: 400 });
+  }
+  const result = await db.prepare(
+    "UPDATE assets SET annual_rate = ? WHERE id = ? AND user_id = ?"
+  ).bind(annualRate, id, user.id).run();
+  if (!result.meta.changes) return Response.json({ error: "资产不存在" }, { status: 404 });
+  return Response.json({ ok: true, annualRate });
 }

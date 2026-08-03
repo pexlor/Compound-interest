@@ -1,98 +1,65 @@
-# vinext-starter
+# 复利簿（本地版）
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+一个在本机运行的全资产记录与未来收益测算工具。
 
-## Prerequisites
+## 已实现功能
 
-- Node.js `>=22.13.0`
+- 记录股票、基金、货币基金、存款、公积金和固定资产
+- 支持本地用户注册、登录和退出
+- 新注册用户从空账本开始，不会自动生成示例资产
+- 不同用户的资产严格分开保存
+- 股票按代码读取历史行情，支持国内股票与美股代码
+- 基金支持国内基金代码及 QQQ、VOO、SPY 等美股 ETF
+- 货币基金按每万份收益折算年化收益率
+- 存款、公积金支持手动输入年利率
+- 录入金额时支持人民币、美元、港币、欧元、日元、英镑等 10 种常用货币
+- 总资产、资产配置和收益预测按最新央行参考汇率统一折算为人民币
+- 支持 1、3、5、10 年复利收益预测
+- 用户、密码哈希、登录会话和资产记录均保存在本机 SQLite 数据库中
 
-## Quick Start
+## 本地启动
+
+需要先安装 [Node.js 22](https://nodejs.org/) 或更高版本。
+
+在当前项目目录打开终端，然后执行：
 
 ```bash
 npm install
 npm run dev
+```
+
+看到 `Local: http://localhost:3000/` 后，在浏览器打开：
+
+<http://localhost:3000/>
+
+停止运行时，在终端按 `Ctrl + C`。
+
+## 本地数据与网络
+
+- 用户和资产记录保存在项目目录下的本地 SQLite 数据库，不会自动上传到第三方账户。
+- 密码不会明文保存，使用随机盐和 PBKDF2-SHA256 哈希后写入数据库。
+- 登录状态使用仅服务端可读的本地 Cookie，有效期 30 天；点击“退出”会立即删除当前会话。
+- `.wrangler/` 是本地数据库和运行缓存目录，已从 Git 中排除。
+- 股票和基金收益率需要联网读取腾讯证券、东方财富的公开行情接口。
+- 外币折算需要联网读取 Frankfurter 汇总的最新央行参考汇率；页面登录后自动读取，也可手动刷新。
+- 若行情接口暂时不可用，已有资产记录和手动利率计算仍可使用。
+
+## 常用命令
+
+```bash
+# 启动本地开发版
+npm run dev
+
+# 检查项目能否正确构建
 npm run build
+
+# 启动已经构建的版本
+npm run start
+
+# 数据表结构变更后生成迁移
+npm run db:generate
 ```
 
-This starter does not use `wrangler.jsonc`.
+## 收益预测说明
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+股票和基金使用指定历史区间的收益率进行年化外推；存款和公积金按录入利率复利计算；固定资产默认不计算收益。外币预测使用当前最新汇率并假设未来汇率保持不变，不包含汇率波动预测。所有预测仅用于个人资产规划参考，不代表实际收益或投资承诺。
