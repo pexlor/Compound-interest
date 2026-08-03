@@ -866,6 +866,38 @@ test("historical USD/CNY rate uses the latest valid rate not after the market da
   assert.ok(requestedUrl.includes("to=2025-07-31"));
 });
 
+test("historical USD/CNY prefers D1 and backfills D1 after an upstream fallback", async () => {
+  const { fetchHistoricalUsdCnyRate } = await load("app/api/market/historical-rates.ts");
+  const { importExchangeRateHistory } = await load("db/exchange-rate-history.ts");
+  const db = createExchangeRateHistoryDb();
+  await importExchangeRateHistory(db, [sampleExchangeRateHistoryEntry(0, {
+    currency: "USD",
+    cnyRate: 7.2,
+    rateDate: "2025-07-31",
+  })]);
+  let upstreamCalls = 0;
+
+  assert.deepEqual(await fetchHistoricalUsdCnyRate({
+    db,
+    fetcher: async () => {
+      upstreamCalls += 1;
+      return Response.json([]);
+    },
+  }, "2025-07-31"), { date: "2025-07-31", rate: 7.2 });
+  assert.equal(upstreamCalls, 0);
+
+  const emptyDb = createExchangeRateHistoryDb();
+  assert.deepEqual(await fetchHistoricalUsdCnyRate({
+    db: emptyDb,
+    fetcher: async (url) => {
+      upstreamCalls += 1;
+      return historicalRateResponse(url, 7.1);
+    },
+  }, "2025-08-01"), { date: "2025-08-01", rate: 7.1 });
+  assert.equal(upstreamCalls, 1);
+  assert.equal(emptyDb.rows.get("USD:2025-08-01").cny_rate, 7.1);
+});
+
 test("historical USD/CNY rate rejects an empty rate window", async () => {
   const { fetchHistoricalUsdCnyRate } = await load("app/api/market/historical-rates.ts");
   await assert.rejects(
@@ -1085,6 +1117,33 @@ test("US stock returns are converted to CNY with historical exchange rates", asy
   assert.equal(maximumActiveRates, 1);
 });
 
+test("US stock calculator uses an injected historical D1 rate reader", async () => {
+  const { createMarketCalculator } = await load("app/api/market/calculator.ts");
+  const rateDates = [];
+  const fetch = async (url) => {
+    const value = String(url);
+    if (value.includes("frankfurter.dev")) throw new Error("Frankfurter must not be called");
+    if (value.includes("usQQQ,day,,,2,qfq")) {
+      return Response.json({ data: { usQQQ: { qt: { usQQQ: ["delay", "QQQ", "QQQ.OQ"] } } } });
+    }
+    if (value.includes("usQQQ.OQ,day,,,2,qfq")) {
+      return Response.json({ data: { "usQQQ.OQ": { day: [["2026-08-02", "119", "119"], ["2026-08-03", "120", "120"]] } } });
+    }
+    return Response.json({ data: { "usQQQ.OQ": { day: [["2025-08-03", "100", "100"]] } } });
+  };
+  const calculator = createMarketCalculator({
+    fetch,
+    historicalRate: async (date) => {
+      rateDates.push(date);
+      return { date, rate: date === "2025-08-03" ? 7.2 : 6.6 };
+    },
+  });
+
+  const result = await calculator.calculate("stock", "QQQ", 365);
+  assert.ok(Math.abs(result.periodReturn - 10) < 1e-9);
+  assert.deepEqual(rateDates, ["2025-08-03", "2026-08-03"]);
+});
+
 test("US stock return fails instead of falling back to USD when historical rates are missing", async () => {
   const { createMarketHandler } = await load("app/api/market/handler.ts");
   const fetch = async (url) => {
@@ -1212,6 +1271,67 @@ test("fund forecasts include scheduled investments in the fund currency", async 
 
   const usd = calculatePortfolio([{ ...base, code: "QQQ", currency: "USD", investment_strategy: "yearly" }], { USD: 7 }, 1, asOf);
   assert.equal(usd.forecast, 770000);
+});
+
+test("exchange-rate API prefers current D1 rates without an upstream request", async () => {
+  const { createExchangeRatesHandler } = await load("app/api/exchange-rates/handler.ts");
+  let upstreamCalls = 0;
+  let syncCalls = 0;
+  const db = { name: "db" };
+  const handler = createExchangeRatesHandler({
+    authenticate: async () => ({ id: 1 }),
+    fetch: async () => {
+      upstreamCalls += 1;
+      return Response.json(validRates);
+    },
+    getAssetsDb: async () => db,
+    readLatestRates: async () => ({
+      rates: Object.fromEntries(supportedExchangeRateCurrencies.map((currency, index) => [currency, index + 1])),
+      date: "2026-08-03",
+    }),
+    syncHistory: async () => { syncCalls += 1; },
+    now: () => Date.parse("2026-08-03T12:00:00.000Z"),
+  });
+
+  const response = await handler(new Request("http://local/api/exchange-rates"));
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.date, "2026-08-03");
+  assert.equal(payload.rates.CNY, 1);
+  assert.equal(upstreamCalls, 0);
+  assert.equal(syncCalls, 0);
+});
+
+test("exchange-rate API syncs stale D1 rates and force refresh records a snapshot", async () => {
+  const { createExchangeRatesHandler } = await load("app/api/exchange-rates/handler.ts");
+  const db = { name: "db" };
+  const syncOptions = [];
+  const snapshots = [];
+  let currentDate = "2026-07-31";
+  const handler = createExchangeRatesHandler({
+    authenticate: async () => ({ id: 7 }),
+    fetch: async () => { throw new Error("upstream must not be called"); },
+    getAssetsDb: async () => db,
+    readLatestRates: async () => ({
+      rates: Object.fromEntries(supportedExchangeRateCurrencies.map((currency, index) => [currency, index + 1])),
+      date: currentDate,
+    }),
+    syncHistory: async (_db, options) => {
+      syncOptions.push(options);
+      currentDate = "2026-08-03";
+    },
+    recordDailySnapshot: async (...args) => {
+      snapshots.push(args);
+      return { snapshot_date: "2026-08-03" };
+    },
+    now: () => Date.parse("2026-08-03T12:00:00.000Z"),
+  });
+
+  assert.equal((await (await handler(new Request("http://local/api/exchange-rates"))).json()).date, "2026-08-03");
+  const forced = await handler(new Request("http://local/api/exchange-rates?refresh=1"));
+  assert.deepEqual(syncOptions, [{}, { forceLatest: true }]);
+  assert.deepEqual(snapshots[0], [db, 7, "exchange_refresh"]);
+  assert.equal((await forced.json()).snapshot.snapshot_date, "2026-08-03");
 });
 
 test("exchange-rate API falls back to stale cache and rejects incomplete data", async () => {

@@ -2,10 +2,13 @@ const foreignCurrencies = ["USD", "HKD", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD
 
 type RateRow = { date: string; base: string; quote: string; rate: number };
 type RatesPayload = { rates: Record<string, number>; date: string; source: string; fetchedAt: string };
+type StoredRates = { rates: Record<string, number>; date: string };
 type Dependencies = {
   authenticate(request: Request): Promise<{ id: number } | null>;
   fetch: typeof fetch;
   getAssetsDb?(): Promise<D1Database>;
+  readLatestRates?(db: D1Database): Promise<StoredRates | null>;
+  syncHistory?(db: D1Database, options?: { forceLatest?: boolean }): Promise<unknown>;
   saveExchangeRates?(db: D1Database, rates: Record<string, number>, rateDate: string): Promise<void>;
   recordDailySnapshot?(db: D1Database, userId: number, trigger: "exchange_refresh"): Promise<unknown>;
   cacheTtlMs?: number;
@@ -81,6 +84,47 @@ export function createExchangeRatesHandler(dependencies: Dependencies) {
     const user = await dependencies.authenticate(request);
     if (!user) return Response.json({ error: "请先登录" }, { status: 401 });
     const force = new URL(request.url).searchParams.get("refresh") === "1";
+    if (dependencies.getAssetsDb && dependencies.readLatestRates && dependencies.syncHistory) {
+      let latest: StoredRates | null = null;
+      try {
+        const db = await dependencies.getAssetsDb();
+        latest = await dependencies.readLatestRates(db);
+        const currentUtcDate = new Date(now()).toISOString().slice(0, 10);
+        if (force || !latest || latest.date < currentUtcDate) {
+          await dependencies.syncHistory(db, force ? { forceLatest: true } : {});
+          latest = await dependencies.readLatestRates(db);
+        }
+        if (latest) {
+          let snapshot: unknown = null;
+          if (force && dependencies.recordDailySnapshot) {
+            snapshot = await dependencies.recordDailySnapshot(db, user.id, "exchange_refresh");
+          }
+          const payload: RatesPayload = {
+            rates: { CNY: 1, ...latest.rates },
+            date: latest.date,
+            source: "本地历史汇率数据库",
+            fetchedAt: new Date(now()).toISOString(),
+          };
+          cache = { ...payload, expiresAt: now() + cacheTtlMs };
+          return Response.json({ ...payload, cached: true, snapshot });
+        }
+      } catch (error) {
+        if (latest) {
+          return Response.json({
+            rates: { CNY: 1, ...latest.rates },
+            date: latest.date,
+            source: "本地历史汇率数据库",
+            fetchedAt: new Date(now()).toISOString(),
+            cached: true,
+            stale: true,
+          });
+        }
+        console.warn("[exchange-rate-history]", {
+          event: "read_fallback",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     if (!force && cache && cache.expiresAt > now()) return Response.json({ ...cache, expiresAt: undefined, cached: true });
     try {
       const payload = await fetchLatestRates();

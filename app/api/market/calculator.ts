@@ -20,6 +20,7 @@ export type MarketCalculation = {
 
 type CalculatorDependencies = {
   fetch: typeof fetch;
+  historicalRate?: (marketDate: string) => Promise<{ date: string; rate: number }>;
   timeoutMs?: number;
   maxConcurrent?: number;
 };
@@ -156,8 +157,10 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
     let end = Number(last[2]);
     if (isUsSecurity) {
       const historicalFetch = (url: string) => upstreamFetch(url, historicalTimeoutMs);
-      const startRate = await fetchHistoricalUsdCnyRate(historicalFetch, String(first[0]));
-      const endRate = await fetchHistoricalUsdCnyRate(historicalFetch, String(last[0]));
+      const readHistoricalRate = dependencies.historicalRate
+        ?? ((marketDate: string) => fetchHistoricalUsdCnyRate(historicalFetch, marketDate));
+      const startRate = await readHistoricalRate(String(first[0]));
+      const endRate = await readHistoricalRate(String(last[0]));
       start *= startRate.rate;
       end *= endRate.rate;
     }

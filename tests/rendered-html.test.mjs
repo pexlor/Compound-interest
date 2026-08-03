@@ -69,10 +69,12 @@ test("local authentication uses hashed passwords and server-only session cookies
 });
 
 test("multi-currency assets are persisted and totals are converted with latest rates", async () => {
-  const [dashboard, assetsRoute, ratesRoute, schema, migration] = await Promise.all([
+  const [dashboard, assetsRoute, ratesRoute, marketRoute, marketPrewarm, schema, migration] = await Promise.all([
     read("app/Dashboard.tsx"),
     read("app/api/assets/handlers.ts"),
     read("app/api/exchange-rates/handler.ts"),
+    read("app/api/market/route.ts"),
+    read("app/api/market/prewarm.ts"),
     read("db/schema.ts"),
     read("drizzle/0002_uneven_gunslinger.sql"),
   ]);
@@ -88,6 +90,8 @@ test("multi-currency assets are persisted and totals are converted with latest r
   assert.match(assetsRoute, /amount, currency, annual_rate/);
   assert.match(ratesRoute, /api\.frankfurter\.dev\/v2\/rates/);
   assert.match(ratesRoute, /rates\[currency\] = 1 \/ row\.rate/);
+  assert.match(marketRoute, /historicalRate/);
+  assert.match(marketPrewarm, /historicalRate/);
   assert.match(schema, /currency: text\("currency"\)\.notNull\(\)\.default\("CNY"\)/);
   assert.match(migration, /ADD `currency` text DEFAULT 'CNY' NOT NULL/);
 });
