@@ -1407,6 +1407,16 @@ test("GOOG ten-year return uses split-adjusted close prices", async () => {
   assert.match(result.source, /复权收盘价/);
 });
 
+test("domestic stock returns reject unadjusted history instead of publishing a wrong rate", async () => {
+  const { createMarketCalculator } = await load("app/api/market/calculator.ts");
+  const calculator = createMarketCalculator({
+    fetch: async () => Response.json({
+      data: { sh600519: { day: [["2016-08-05", "190", "190"], ["2026-08-03", "1358", "1358"]] } },
+    }),
+  });
+  await assert.rejects(calculator.calculate("stock", "600519", 3650), /没有找到这个股票代码的历史行情/);
+});
+
 const validRates = ["USD", "HKD", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "CHF"].map((quote) => ({
   date: "2026-08-03", base: "CNY", quote, rate: quote === "USD" ? 0.14 : 1,
 }));

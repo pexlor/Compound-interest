@@ -186,8 +186,8 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
       const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(candidate)},day,${startDate},${endDate},${count},qfq`;
       const response = await upstreamFetch(url);
       if (!response.ok) throw new Error("行情服务暂时不可用");
-      const json = (await response.json()) as { data?: Record<string, { qfqday?: (string | object)[][]; day?: (string | object)[][] }> };
-      return json.data?.[candidate]?.qfqday ?? json.data?.[candidate]?.day ?? [];
+      const json = (await response.json()) as { data?: Record<string, { qfqday?: (string | object)[][] }> };
+      return json.data?.[candidate]?.qfqday ?? [];
     };
     let selected: { first: (string | object)[]; last: (string | object)[] } | null = null;
     let earliestFallback: { first: (string | object)[]; last: (string | object)[] } | null = null;
