@@ -249,7 +249,7 @@ test("market return prewarm deduplicates assets, covers four lookbacks, and isol
   const { createMarketReturnService, LOOKBACK_DAYS } = await load("app/api/market/market-return-service.ts");
   const db = createMarketReturnDb();
   db.assets.push(
-    { user_id: 1, category: "stock", code: "qqq" },
+    { user_id: 1, category: "stock", code: " qqq " },
     { user_id: 2, category: "stock", code: "QQQ" },
     { user_id: 1, category: "fund", code: "FAIL" },
     { user_id: 1, category: "deposit", code: null },

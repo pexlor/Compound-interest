@@ -33,7 +33,8 @@ function errorMessage(error: unknown) {
 }
 
 function normalizeKey(category: string, code: string): MarketKey {
-  return { category: category.trim(), code: /^[a-z]/i.test(code) ? code.trim().toUpperCase() : code.trim() };
+  const trimmedCode = code.trim();
+  return { category: category.trim(), code: /^[a-z]/i.test(trimmedCode) ? trimmedCode.toUpperCase() : trimmedCode };
 }
 
 function uniqueKeys(rows: MarketKey[]) {

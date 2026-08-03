@@ -186,8 +186,11 @@ export default function Dashboard() {
   useEffect(() => {
     if (!user) return;
     const controller = new AbortController();
-    void loadMarketRates(lookback, false, controller.signal);
-    return () => controller.abort();
+    const timer = window.setTimeout(() => void loadMarketRates(lookback, false, controller.signal), 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [loadMarketRates, lookback, user]);
 
   useEffect(() => {
