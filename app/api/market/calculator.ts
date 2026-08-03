@@ -186,11 +186,18 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
   async function stockQuote(code: string): Promise<MarketQuote> {
     const isUsSecurity = isUsSecurityCode(code);
     const symbol = await resolveStockSymbol(code);
-    const response = await upstreamFetch(`https://qt.gtimg.cn/q=${encodeURIComponent(symbol)}`);
-    if (!response.ok) throw new Error("行情服务暂时不可用");
-    const payload = await response.text();
-    const fields = payload.match(/="([^"]*)"/)?.[1]?.split("~") ?? [];
-    const currentPrice = Number(fields[3]);
+    const rawSymbol = isUsSecurity ? `us${code}` : symbol;
+    const candidates = symbol === rawSymbol ? [symbol] : [symbol, rawSymbol];
+    let fields: string[] = [];
+    let currentPrice = 0;
+    for (const candidate of candidates) {
+      const response = await upstreamFetch(`https://qt.gtimg.cn/q=${encodeURIComponent(candidate)}`);
+      if (!response.ok) continue;
+      const payload = await response.text();
+      fields = payload.match(/="([^"]*)"/)?.[1]?.split("~") ?? [];
+      currentPrice = Number(fields[3]);
+      if (Number.isFinite(currentPrice) && currentPrice > 0) break;
+    }
     if (!Number.isFinite(currentPrice) || currentPrice <= 0) throw new Error("没有找到这个股票代码的实时价格");
     const rawDate = fields[30] || "";
     const priceDate = /^\d{14}$/.test(rawDate)

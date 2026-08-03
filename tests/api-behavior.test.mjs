@@ -1324,6 +1324,28 @@ test("market calculator reads live stock prices and latest fund unit values", as
   });
 });
 
+test("QQQ live quote falls back from the exchange-suffixed symbol to the raw ticker", async () => {
+  const { createMarketCalculator } = await load("app/api/market/calculator.ts");
+  const requested = [];
+  const calculator = createMarketCalculator({
+    fetch: async (url) => {
+      const href = String(url);
+      requested.push(href);
+      if (href.includes("fqkline")) return Response.json({ data: { usQQQ: { qt: { usQQQ: ["", "", "QQQ.OQ"] } } } });
+      if (href.endsWith("q=usQQQ.OQ")) return new Response('v_pv_none_match="1";');
+      if (href.endsWith("q=usQQQ")) return new Response('v_usQQQ="200~QQQ~QQQ.OQ~700.07~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~2026-08-04 10:30:00";');
+      throw new Error(`Unexpected URL: ${href}`);
+    },
+  });
+  assert.deepEqual(await calculator.quote("stock", "QQQ"), {
+    currentPrice: 700.07,
+    priceCurrency: "USD",
+    priceDate: "2026-08-04 10:30:00",
+  });
+  assert.ok(requested.some((url) => url.endsWith("q=usQQQ.OQ")));
+  assert.ok(requested.some((url) => url.endsWith("q=usQQQ")));
+});
+
 test("QQQ ten-year history uses a target-date window", async () => {
   const { createMarketHandler } = await load("app/api/market/handler.ts");
   const urls = [];
