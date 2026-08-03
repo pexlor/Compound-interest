@@ -7,7 +7,7 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 test("new accounts start with an empty asset list", async () => {
   const [dashboard, register, readme] = await Promise.all([
     read("app/Dashboard.tsx"),
-    read("app/api/auth/register/route.ts"),
+    read("app/api/auth/register/handler.ts"),
     read("README.md"),
   ]);
 
@@ -20,7 +20,7 @@ test("new accounts start with an empty asset list", async () => {
 });
 
 test("asset reads, writes, updates, and deletes are scoped to the signed-in user", async () => {
-  const route = await read("app/api/assets/route.ts");
+  const route = await read("app/api/assets/handlers.ts");
 
   assert.match(route, /getAuthenticatedUser/);
   assert.match(route, /WHERE user_id = \?/);
@@ -35,7 +35,7 @@ test("asset reads, writes, updates, and deletes are scoped to the signed-in user
 test("market-rate sync is persisted and delete updates the visible list", async () => {
   const [dashboard, market] = await Promise.all([
     read("app/Dashboard.tsx"),
-    read("app/api/market/route.ts"),
+    read("app/api/market/handler.ts"),
   ]);
 
   assert.match(dashboard, /method: "PATCH"/);
@@ -44,6 +44,7 @@ test("market-rate sync is persisted and delete updates the visible list", async 
   assert.match(dashboard, /current\.filter\(\(item\) => item\.id !== asset\.id\)/);
   assert.match(dashboard, /setAssets\((?:data|assetData)\.assets \?\? \[\]\)/);
   assert.match(dashboard, /例如 510300、QQQ、VOO/);
+  assert.match(dashboard, /近10年/);
   assert.match(market, /isUsSecurityCode/);
   assert.match(market, /`us\$\{resolvedCode\}`/);
   assert.match(market, /腾讯证券美股历史行情/);
@@ -67,8 +68,8 @@ test("local authentication uses hashed passwords and server-only session cookies
 test("multi-currency assets are persisted and totals are converted with latest rates", async () => {
   const [dashboard, assetsRoute, ratesRoute, schema, migration] = await Promise.all([
     read("app/Dashboard.tsx"),
-    read("app/api/assets/route.ts"),
-    read("app/api/exchange-rates/route.ts"),
+    read("app/api/assets/handlers.ts"),
+    read("app/api/exchange-rates/handler.ts"),
     read("db/schema.ts"),
     read("drizzle/0002_uneven_gunslinger.sql"),
   ]);
@@ -86,4 +87,14 @@ test("multi-currency assets are persisted and totals are converted with latest r
   assert.match(ratesRoute, /rates\[currency\] = 1 \/ row\.rate/);
   assert.match(schema, /currency: text\("currency"\)\.notNull\(\)\.default\("CNY"\)/);
   assert.match(migration, /ADD `currency` text DEFAULT 'CNY' NOT NULL/);
+});
+
+test("asset history renders a trend chart, change table, and empty state", async () => {
+  const dashboard = await read("app/Dashboard.tsx");
+  assert.match(dashboard, /\/api\/history/);
+  assert.match(dashboard, /资产历史/);
+  assert.match(dashboard, /较上次/);
+  assert.match(dashboard, /history-chart/);
+  assert.match(dashboard, /还没有历史记录/);
+  assert.match(dashboard, /再产生一天记录后显示走势/);
 });

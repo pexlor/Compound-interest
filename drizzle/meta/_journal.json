@@ -22,6 +22,13 @@
       "when": 1785721071177,
       "tag": "0002_uneven_gunslinger",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1785729174882,
+      "tag": "0003_lively_wilson_fisk",
+      "breakpoints": true
     }
   ]
 }

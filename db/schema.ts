@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -30,3 +30,23 @@ export const assets = sqliteTable("assets", {
   note: text("note").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const exchangeRates = sqliteTable("exchange_rates", {
+  currency: text("currency").primaryKey(),
+  cnyRate: real("cny_rate").notNull(),
+  rateDate: text("rate_date").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const assetHistory = sqliteTable("asset_history", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  snapshotDate: text("snapshot_date").notNull(),
+  totalCny: integer("total_cny").notNull(),
+  trigger: text("trigger").notNull(),
+  rateDate: text("rate_date"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("asset_history_user_date_unique").on(table.userId, table.snapshotDate),
+]);

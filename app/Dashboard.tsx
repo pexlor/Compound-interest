@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { calculatePortfolio } from "./portfolio";
 
 type Category = "stock" | "fund" | "money" | "deposit" | "housing" | "fixed";
 type Currency = "CNY" | "USD" | "HKD" | "EUR" | "JPY" | "GBP" | "SGD" | "AUD" | "CAD" | "CHF";
@@ -16,6 +17,13 @@ type Asset = {
   created_at: string;
 };
 type User = { id: number; email: string; displayName: string };
+type HistoryEntry = {
+  id: number;
+  snapshot_date: string;
+  total_cny: number;
+  trigger: "asset_change" | "exchange_refresh";
+  rate_date: string | null;
+};
 
 const categoryMeta: Record<Category, { name: string; short: string; color: string }> = {
   stock: { name: "股票", short: "股", color: "#ee6a4d" },
@@ -64,6 +72,7 @@ export default function Dashboard() {
   const [authLoading, setAuthLoading] = useState(true);
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [activeFilter, setActiveFilter] = useState<"all" | Category>("all");
   const [horizon, setHorizon] = useState(3);
   const [lookback, setLookback] = useState(3);
@@ -101,9 +110,15 @@ export default function Dashboard() {
         if (!response.ok) throw new Error("rates");
         return response.json();
       }).catch(() => null),
+      fetch("/api/history?limit=3650").then(async (response) => {
+        if (response.status === 401) throw new Error("unauthorized");
+        if (!response.ok) throw new Error("history");
+        return response.json();
+      }),
     ])
-      .then(([assetData, rateData]) => {
+      .then(([assetData, rateData, historyData]) => {
         setAssets(assetData.assets ?? []);
+        setHistory(historyData.history ?? []);
         if (rateData) {
           setExchangeRates(rateData.rates);
           setExchangeDate(rateData.date);
@@ -129,18 +144,11 @@ export default function Dashboard() {
   }, [toast]);
 
   const missingExchangeRate = assets.some((asset) => !exchangeRates[asset.currency]);
-  const total = useMemo(() => assets.reduce((sum, asset) => sum + toCny(asset, exchangeRates), 0), [assets, exchangeRates]);
-  const forecast = useMemo(
-    () => assets.reduce((sum, asset) => {
-      const rate = asset.category === "fixed" ? 0 : asset.annual_rate / 100;
-      return sum + toCny(asset, exchangeRates) * Math.pow(1 + rate, horizon);
-    }, 0),
-    [assets, exchangeRates, horizon]
-  );
-  const expectedGain = forecast - total;
-  const weightedRate = total
-    ? assets.reduce((sum, asset) => sum + toCny(asset, exchangeRates) * asset.annual_rate, 0) / total
-    : 0;
+  const portfolio = useMemo(() => calculatePortfolio(assets, exchangeRates, horizon), [assets, exchangeRates, horizon]);
+  const total = portfolio?.total ?? 0;
+  const forecast = portfolio?.forecast ?? 0;
+  const expectedGain = portfolio?.expectedGain ?? 0;
+  const weightedRate = portfolio?.weightedRate ?? 0;
 
   const grouped = useMemo(() => {
     return (Object.keys(categoryMeta) as Category[]).map((category) => ({
@@ -159,38 +167,59 @@ export default function Dashboard() {
   const minChart = Math.min(...chartValues);
   const maxChart = Math.max(...chartValues);
 
+  async function refreshHistory() {
+    try {
+      const response = await fetch("/api/history?limit=3650");
+      if (response.status === 401) {
+        setUser(null);
+        return;
+      }
+      if (!response.ok) throw new Error("history");
+      const data = await response.json();
+      setHistory(data.history ?? []);
+    } catch {
+      setToast("资产已保存，但历史走势读取失败");
+    }
+  }
+
   async function addAsset(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
-    const form = new FormData(event.currentTarget);
-    const category = form.get("category") as Category;
-    let rate = Number(form.get("annualRate")) || 0;
-    const code = String(form.get("code") || "").trim().toUpperCase();
-    if (code && ["stock", "fund", "money"].includes(category)) {
-      try {
-        const marketResponse = await fetch(`/api/market?code=${encodeURIComponent(code)}&category=${category}&days=${lookback * 365}`);
-        const market = await marketResponse.json();
-        if (marketResponse.ok) rate = Number(market.annualRate.toFixed(2));
-      } catch { /* retain manual/default rate */ }
+    try {
+      const form = new FormData(event.currentTarget);
+      const category = form.get("category") as Category;
+      let rate = Number(form.get("annualRate")) || 0;
+      const code = String(form.get("code") || "").trim().toUpperCase();
+      if (code && ["stock", "fund", "money"].includes(category)) {
+        try {
+          const marketResponse = await fetch(`/api/market?code=${encodeURIComponent(code)}&category=${category}&days=${lookback * 365}`);
+          const market = await marketResponse.json();
+          if (marketResponse.ok) rate = Number(market.annualRate.toFixed(2));
+        } catch { /* retain manual/default rate */ }
+      }
+      const response = await fetch("/api/assets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: form.get("name"), category, code,
+          amount: Number(form.get("amount")), currency: form.get("currency"), annualRate: rate, note: form.get("note"),
+        }),
+      });
+      const data = await response.json();
+      if (response.status === 401) {
+        setUser(null);
+        return;
+      }
+      if (!response.ok) return setToast(data.error || "保存失败，请重试");
+      setAssets((current) => [...current, data.asset]);
+      await refreshHistory();
+      setModalOpen(false);
+      setToast(data.snapshot ? "资产已加入总览，今日历史已更新" : "资产已加入；汇率不完整，今日历史暂未更新");
+    } catch {
+      setToast("保存失败，请检查本地服务后重试");
+    } finally {
+      setSaving(false);
     }
-    const response = await fetch("/api/assets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: form.get("name"), category, code,
-        amount: Number(form.get("amount")), currency: form.get("currency"), annualRate: rate, note: form.get("note"),
-      }),
-    });
-    const data = await response.json();
-    setSaving(false);
-    if (response.status === 401) {
-      setUser(null);
-      return;
-    }
-    if (!response.ok) return setToast(data.error || "保存失败，请重试");
-    setAssets((current) => [...current, data.asset]);
-    setModalOpen(false);
-    setToast("资产已加入总览");
   }
 
   async function syncMarketRates() {
@@ -232,7 +261,8 @@ export default function Dashboard() {
       setExchangeRates(data.rates);
       setExchangeDate(data.date);
       setExchangeStale(Boolean(data.stale));
-      setToast(data.stale ? "实时汇率暂不可用，已继续使用上次汇率" : "最新汇率已更新");
+      await refreshHistory();
+      setToast(data.stale ? "实时汇率暂不可用，已继续使用上次汇率" : data.snapshot ? "最新汇率与今日历史已更新" : "最新汇率已更新，历史快照暂不可用");
     } catch (error) {
       setToast(error instanceof Error ? error.message : "读取最新汇率失败");
     } finally {
@@ -246,10 +276,12 @@ export default function Dashboard() {
       setUser(null);
       return;
     }
-    if (!response.ok) return setToast("删除失败，请重试");
+    const data = await response.json();
+    if (!response.ok) return setToast(data.error || "删除失败，请重试");
     setAssets((current) => current.filter((item) => item.id !== asset.id));
+    await refreshHistory();
     setSelected(null);
-    setToast("资产已移除");
+    setToast(data.snapshot ? "资产已移除，今日历史已更新" : "资产已移除，今日历史暂未更新");
   }
 
   async function updateAsset(event: FormEvent<HTMLFormElement>) {
@@ -276,7 +308,8 @@ export default function Dashboard() {
       const updated = { ...selected, amount: data.amount, currency: data.currency as Currency };
       setAssets((current) => current.map((asset) => asset.id === updated.id ? updated : asset));
       setSelected(updated);
-      setToast("资产金额与币种已保存");
+      await refreshHistory();
+      setToast(data.snapshot ? "资产金额与币种已保存，今日历史已更新" : "资产已保存，今日历史暂未更新");
     } catch {
       setToast("修改失败，请重试");
     } finally {
@@ -288,6 +321,7 @@ export default function Dashboard() {
     await fetch("/api/auth/logout", { method: "POST" });
     setUser(null);
     setAssets([]);
+    setHistory([]);
     setAssetsLoading(false);
     setSelected(null);
     setExchangeRates({ CNY: 1 });
@@ -311,6 +345,7 @@ export default function Dashboard() {
           <a className="nav-active" href="#overview">总览</a>
           <a href="#assets">资产</a>
           <a href="#forecast">预测</a>
+          <a href="#history">历史</a>
         </nav>
         <div className="header-actions">
           <div className="user-chip"><span className="avatar">{user.displayName.slice(0, 1)}</span><span className="user-meta"><strong>{user.displayName}</strong><small>{user.email}</small></span></div>
@@ -333,25 +368,25 @@ export default function Dashboard() {
             <div className="total-value">{missingExchangeRate ? "汇率暂不可用" : money(total)}</div>
             <div className="change-row"><span className="change-pill">汇率折算</span><span>本月预估增长 {missingExchangeRate ? "等待汇率" : money(expectedGain / Math.max(1, horizon * 12))}</span></div>
             <div className="mini-stats">
-              <div><span>可产生收益</span><strong>{money(total - (grouped.find((g) => g.category === "fixed")?.amount || 0))}</strong></div>
-              <div><span>组合预期年化</span><strong>{weightedRate.toFixed(2)}%</strong></div>
+              <div><span>可产生收益</span><strong>{missingExchangeRate ? "等待汇率" : money(total - (grouped.find((g) => g.category === "fixed")?.amount || 0))}</strong></div>
+              <div><span>组合预期年化</span><strong>{missingExchangeRate ? "等待汇率" : `${weightedRate.toFixed(2)}%`}</strong></div>
             </div>
           </article>
 
           <article className="allocation-card">
             <div className="card-heading"><div><span className="card-kicker">资产配置</span><h2>钱放在了哪里</h2></div><button className="text-button" onClick={() => setActiveFilter("all")}>查看全部</button></div>
             <div className="allocation-body">
-              <div className="donut" style={{ background: total ? `conic-gradient(${grouped.map((item, index) => {
+              {!missingExchangeRate ? <div className="donut" style={{ background: total ? `conic-gradient(${grouped.map((item, index) => {
                 const before = grouped.slice(0, index).reduce((sum, group) => sum + group.amount, 0) / total * 100;
                 const after = before + item.amount / total * 100;
                 return `${categoryMeta[item.category].color} ${before}% ${after}%`;
-              }).join(",")})` : "#edf1ee" }}><div><strong>{grouped.length}</strong><span>类资产</span></div></div>
-              <div className="allocation-list">
+              }).join(",")})` : "#edf1ee" }}><div><strong>{grouped.length}</strong><span>类资产</span></div></div> : <div className="unavailable-state">等待完整汇率后显示配置</div>}
+              {!missingExchangeRate && <div className="allocation-list">
                 {grouped.slice(0, 5).map((item) => <button key={item.category} onClick={() => setActiveFilter(item.category)}>
                   <span className="legend-dot" style={{ background: categoryMeta[item.category].color }} />
                   <span>{categoryMeta[item.category].name}</span><strong>{(item.amount / total * 100).toFixed(1)}%</strong>
                 </button>)}
-              </div>
+              </div>}
             </div>
           </article>
         </section>
@@ -361,19 +396,19 @@ export default function Dashboard() {
             <span className="card-kicker">未来收益推演</span>
             <h2>{horizon} 年后，预计拥有</h2>
             <div className="forecast-number">{missingExchangeRate ? "等待汇率" : money(forecast)}</div>
-            <p>按当前组合与复利计算，预计新增 <b>{money(expectedGain)}</b></p>
+            <p>按当前组合与复利计算，预计新增 <b>{missingExchangeRate ? "等待汇率" : money(expectedGain)}</b></p>
             <div className="control-block">
               <span>预测到未来</span>
               <div className="segmented">{[1, 3, 5, 10].map((year) => <button className={horizon === year ? "active" : ""} key={year} onClick={() => setHorizon(year)}>{year}年</button>)}</div>
             </div>
             <div className="sync-row">
-              <label>历史区间<select value={lookback} onChange={(event) => setLookback(Number(event.target.value))}><option value="1">近1年</option><option value="3">近3年</option><option value="5">近5年</option></select></label>
+              <label>历史区间<select value={lookback} onChange={(event) => setLookback(Number(event.target.value))}><option value="1">近1年</option><option value="3">近3年</option><option value="5">近5年</option><option value="10">近10年</option></select></label>
               <button onClick={syncMarketRates} disabled={syncing}>{syncing ? "读取中…" : "读取最新收益率"}</button>
             </div>
           </div>
           <div className="chart-wrap" aria-label={`未来 ${horizon} 年资产预测折线图`}>
             <div className="chart-top"><span>资产增长曲线</span><span className="forecast-legend"><i /> 历史收益率外推</span></div>
-            <div className="chart">
+            {!missingExchangeRate ? <div className="chart">
               <span className="y-label top">{money(maxChart)}</span><span className="y-label bottom">{money(minChart)}</span>
               <div className="gridline gridline-1"/><div className="gridline gridline-2"/><div className="gridline gridline-3"/>
               <div className="bars">
@@ -382,10 +417,12 @@ export default function Dashboard() {
                   return <div className="bar-column" key={index}><span className="bar-value">{index === chartValues.length - 1 ? `+${money(value - total)}` : ""}</span><div className="bar" style={{ height: `${height}%` }} /><small>{index === 0 ? "现在" : `${index}年`}</small></div>;
                 })}
               </div>
-            </div>
+            </div> : <div className="unavailable-chart">等待完整汇率后显示预测曲线</div>}
             <p className="disclaimer">预测基于历史收益率与输入利率，外币按当前汇率不变测算，不代表实际收益或投资承诺。</p>
           </div>
         </section>
+
+        <HistorySection history={history} />
 
         <section className="assets-section" id="assets">
           <div className="section-heading"><div><span className="card-kicker">我的资产</span><h2>每一笔，都心中有数</h2></div><div className="section-actions"><span>{assets.length} 项资产</span><button className="primary-button compact" onClick={() => setModalOpen(true)}><span>＋</span> 记录资产</button></div></div>
@@ -402,7 +439,7 @@ export default function Dashboard() {
                 <span className="asset-icon" style={{ background: `${meta.color}18`, color: meta.color }}>{meta.short}</span>
                 <span className="asset-main"><strong>{asset.name}</strong><small>{meta.name}{asset.code ? ` · ${asset.code}` : ""} · {asset.note}</small></span>
                 <span className="asset-rate"><small>{asset.category === "fixed" ? "不计收益" : "预测年化"}</small><strong className={asset.annual_rate < 0 ? "negative" : ""}>{asset.category === "fixed" ? "—" : `${asset.annual_rate.toFixed(2)}%`}</strong></span>
-                <span className="asset-amount"><strong>{originalMoney(asset.amount, asset.currency)}</strong><small>{asset.currency === "CNY" ? "人民币" : cnyAmount ? `≈ ${money(cnyAmount)} · ${currencyMeta[asset.currency]}` : "等待汇率"}{total && cnyAmount ? ` · ${(cnyAmount / total * 100).toFixed(1)}%` : ""}</small></span>
+                <span className="asset-amount"><strong>{originalMoney(asset.amount, asset.currency)}</strong><small>{asset.currency === "CNY" ? "人民币" : exchangeRates[asset.currency] ? `≈ ${money(cnyAmount)} · ${currencyMeta[asset.currency]}` : "等待汇率"}{!missingExchangeRate && total && cnyAmount ? ` · ${(cnyAmount / total * 100).toFixed(1)}%` : ""}</small></span>
                 <span className="chevron">›</span>
               </button>;
             })}
@@ -438,6 +475,64 @@ export default function Dashboard() {
       {toast && <div className="toast" role="status">{toast}</div>}
     </main>
   );
+}
+
+function HistorySection({ history }: { history: HistoryEntry[] }) {
+  const rows = history.map((entry, index) => {
+    const previous = history[index - 1];
+    const change = previous ? entry.total_cny - previous.total_cny : null;
+    const changeRate = previous && previous.total_cny ? (change! / previous.total_cny) * 100 : null;
+    return { ...entry, change, changeRate };
+  });
+  const values = history.map((entry) => entry.total_cny);
+  const min = values.length ? Math.min(...values) : 0;
+  const max = values.length ? Math.max(...values) : 0;
+  const chartWidth = 680;
+  const chartHeight = 240;
+  const paddingX = 34;
+  const paddingY = 28;
+  const points = history.map((entry, index) => {
+    const x = paddingX + index / Math.max(1, history.length - 1) * (chartWidth - paddingX * 2);
+    const y = paddingY + (max === min ? 0.5 : (max - entry.total_cny) / (max - min)) * (chartHeight - paddingY * 2);
+    return { x, y };
+  });
+  const totalChange = history.length > 1 ? history.at(-1)!.total_cny - history[0].total_cny : 0;
+
+  return <section className="history-section" id="history">
+    <div className="section-heading history-heading">
+      <div><span className="card-kicker">资产历史</span><h2>总资产走过的轨迹</h2></div>
+      <span className="history-count">{history.length} 天记录</span>
+    </div>
+    {history.length === 0 ? <div className="history-empty"><strong>还没有历史记录</strong><span>新增、修改或删除资产后，这里会保存当天最后一次总资产。</span></div> : <>
+      {history.length >= 2 ? <div className="history-chart-grid">
+        <div className="history-chart" aria-label="历史总资产折线图">
+          <div className="history-chart-labels"><span>{money(max)}</span><span>{money(min)}</span></div>
+          <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label="按日期排列的历史总资产走势">
+            <line x1={paddingX} y1={paddingY} x2={chartWidth - paddingX} y2={paddingY} />
+            <line x1={paddingX} y1={chartHeight / 2} x2={chartWidth - paddingX} y2={chartHeight / 2} />
+            <line x1={paddingX} y1={chartHeight - paddingY} x2={chartWidth - paddingX} y2={chartHeight - paddingY} />
+            <polyline points={points.map((point) => `${point.x},${point.y}`).join(" ")} />
+            {points.map((point, index) => <circle key={history[index].snapshot_date} cx={point.x} cy={point.y} r="4"><title>{history[index].snapshot_date} · {money(history[index].total_cny)}</title></circle>)}
+          </svg>
+          <div className="history-axis"><span>{history[0].snapshot_date}</span><span>{history.at(-1)!.snapshot_date}</span></div>
+        </div>
+        <div className="history-summary">
+          <span>最新总资产</span><strong>{money(history.at(-1)!.total_cny)}</strong>
+          <small>区间变化</small><b className={totalChange < 0 ? "negative" : "positive"}>{totalChange > 0 ? "+" : ""}{money(totalChange)}</b>
+        </div>
+      </div> : <div className="history-empty compact"><strong>已记录今天的总资产</strong><span>再产生一天记录后显示走势。</span></div>}
+      <div className="history-table-wrap">
+        <table className="history-table">
+          <thead><tr><th>日期</th><th>总资产</th><th>较上次</th><th>变化率</th></tr></thead>
+          <tbody>{[...rows].reverse().map((row) => <tr key={row.snapshot_date}>
+            <td>{row.snapshot_date}</td><td>{money(row.total_cny)}</td>
+            <td className={row.change === null ? "" : row.change < 0 ? "negative" : "positive"}>{row.change === null ? "—" : `${row.change > 0 ? "+" : ""}${money(row.change)}`}</td>
+            <td className={row.changeRate === null ? "" : row.changeRate < 0 ? "negative" : "positive"}>{row.changeRate === null ? "—" : `${row.changeRate > 0 ? "+" : ""}${row.changeRate.toFixed(2)}%`}</td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+    </>}
+  </section>;
 }
 
 function AssetForm({ onSubmit, saving }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; saving: boolean }) {

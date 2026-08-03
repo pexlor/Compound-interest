@@ -52,6 +52,28 @@ async function initialize(db: D1Database) {
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS exchange_rates (
+        currency TEXT PRIMARY KEY,
+        cny_rate REAL NOT NULL,
+        rate_date TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS asset_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        snapshot_date TEXT NOT NULL,
+        total_cny INTEGER NOT NULL,
+        trigger TEXT NOT NULL,
+        rate_date TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE (user_id, snapshot_date)
+      )
+    `),
   ]);
 
   const columns = await db.prepare("PRAGMA table_info(assets)").all<{ name: string }>();
@@ -67,6 +89,7 @@ async function initialize(db: D1Database) {
     db.prepare("CREATE INDEX IF NOT EXISTS assets_user_id_idx ON assets (user_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions (expires_at)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS asset_history_user_id_idx ON asset_history (user_id)"),
   ]);
 }
 
