@@ -98,3 +98,8 @@ test("asset history renders a trend chart, change table, and empty state", async
   assert.match(dashboard, /还没有历史记录/);
   assert.match(dashboard, /再产生一天记录后显示走势/);
 });
+
+test("portfolio annual rate explains the selected historical lookback", async () => {
+  const dashboard = await read("app/Dashboard.tsx");
+  assert.match(dashboard, /组合预期年化（根据最近\{lookback\}年数据计算）/);
+});

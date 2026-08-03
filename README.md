@@ -24,6 +24,20 @@
 
 需要先安装 [Node.js 22](https://nodejs.org/) 或更高版本。
 
+macOS 可以直接双击项目目录中的 `start-local.command`。脚本会自动检查运行环境、首次安装依赖，并在服务启动后打开浏览器。
+
+Linux 可以执行一键启动脚本。默认监听所有网卡的 3000 端口，并将本地数据库保存在 `.wrangler/state`：
+
+```bash
+./start-linux.sh
+```
+
+需要修改监听地址或端口时，可以使用环境变量，例如：
+
+```bash
+APP_HOST=127.0.0.1 APP_PORT=3100 ./start-linux.sh
+```
+
 在当前项目目录打开终端，然后执行：
 
 ```bash
@@ -57,8 +71,8 @@ npm run dev
 # 检查项目能否正确构建
 npm run build
 
-# 启动已经构建的版本
-npm run start
+# Linux 一键构建并启动 Worker 版本
+./start-linux.sh
 
 # 数据表结构变更后生成迁移
 npm run db:generate

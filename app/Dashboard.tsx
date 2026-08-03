@@ -369,7 +369,7 @@ export default function Dashboard() {
             <div className="change-row"><span className="change-pill">汇率折算</span><span>本月预估增长 {missingExchangeRate ? "等待汇率" : money(expectedGain / Math.max(1, horizon * 12))}</span></div>
             <div className="mini-stats">
               <div><span>可产生收益</span><strong>{missingExchangeRate ? "等待汇率" : money(total - (grouped.find((g) => g.category === "fixed")?.amount || 0))}</strong></div>
-              <div><span>组合预期年化</span><strong>{missingExchangeRate ? "等待汇率" : `${weightedRate.toFixed(2)}%`}</strong></div>
+              <div><span>组合预期年化（根据最近{lookback}年数据计算）</span><strong>{missingExchangeRate ? "等待汇率" : `${weightedRate.toFixed(2)}%`}</strong></div>
             </div>
           </article>
 
