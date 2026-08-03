@@ -273,6 +273,36 @@ test("market return prewarm deduplicates assets, covers four lookbacks, and isol
   assert.ok(events.some((event) => event[2]?.event === "prewarm_complete" && event[2]?.failed === 4));
 });
 
+test("Worker lifecycle starts prewarm once without blocking fetch and runs scheduled prewarm", async () => {
+  const { createWorkerLifecycle } = await load("worker/lifecycle.ts");
+  let prewarmCalls = 0;
+  let releaseStartup;
+  const startupPending = new Promise((resolve) => { releaseStartup = resolve; });
+  const waits = [];
+  const context = { waitUntil: (promise) => waits.push(promise) };
+  const lifecycle = createWorkerLifecycle({
+    handleRequest: async () => new Response("ready"),
+    prewarm: async (_env, trigger) => {
+      prewarmCalls += 1;
+      if (trigger === "startup") await startupPending;
+    },
+    logger: captureLogger().logger,
+  });
+
+  const first = await lifecycle.fetch(new Request("http://local/"), {}, context);
+  assert.equal(await first.text(), "ready");
+  assert.equal(prewarmCalls, 1);
+  assert.equal(waits.length, 1);
+  await lifecycle.fetch(new Request("http://local/again"), {}, context);
+  assert.equal(prewarmCalls, 1);
+  releaseStartup();
+  await waits[0];
+
+  lifecycle.scheduled({}, {}, context);
+  await waits.at(-1);
+  assert.equal(prewarmCalls, 2);
+});
+
 test("daily asset snapshot uses complete rates and overwrites the same date", async () => {
   const { calculateSnapshotTotal, recordDailySnapshot } = await load("db/history.ts");
   assert.equal(calculateSnapshotTotal([

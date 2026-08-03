@@ -17,7 +17,7 @@ export type AssetRow = {
 
 let initialization: Promise<void> | null = null;
 
-async function initialize(db: D1Database) {
+export async function initializeAssetsDb(db: D1Database) {
   await db.batch([
     db.prepare(`
       CREATE TABLE IF NOT EXISTS users (
@@ -126,7 +126,7 @@ async function initialize(db: D1Database) {
 export async function getAssetsDb() {
   const db = env.DB;
   if (!db) throw new Error("本地 SQLite 数据库暂不可用");
-  initialization ??= initialize(db);
+  initialization ??= initializeAssetsDb(db);
   await initialization;
   return db;
 }

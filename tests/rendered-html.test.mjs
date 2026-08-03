@@ -105,3 +105,10 @@ test("portfolio annual rate explains the selected historical lookback", async ()
   const dashboard = await read("app/Dashboard.tsx");
   assert.match(dashboard, /组合预期年化（根据最近\{lookback\}年数据计算）/);
 });
+
+test("Worker config schedules market return prewarm for 04:10 Shanghai time", async () => {
+  const [viteConfig, worker] = await Promise.all([read("vite.config.ts"), read("worker/index.ts")]);
+  assert.match(viteConfig, /crons:\s*\["10 20 \* \* \*"\]/);
+  assert.match(worker, /createWorkerLifecycle/);
+  assert.match(worker, /prewarmMarketReturns/);
+});

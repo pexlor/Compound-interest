@@ -1,6 +1,8 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { prewarmMarketReturns } from "../app/api/market/prewarm";
+import { createWorkerLifecycle } from "./lifecycle";
 
 interface Env {
   ASSETS: Fetcher;
@@ -25,8 +27,8 @@ interface ExecutionContext {
 // dangerouslyAllowSVG: true in next.config.js and uncomment below:
 // const imageConfig: ImageConfig = { dangerouslyAllowSVG: true };
 
-const worker = {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+const worker = createWorkerLifecycle<Env, ExecutionContext>({
+  async handleRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === "/_vinext/image") {
@@ -42,6 +44,7 @@ const worker = {
 
     return handler.fetch(request, env, ctx);
   },
-};
+  prewarm: (env) => prewarmMarketReturns(env.DB, (input, init) => fetch(input, init)),
+});
 
 export default worker;
