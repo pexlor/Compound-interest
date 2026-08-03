@@ -25,10 +25,10 @@ function createAssetDb() {
             },
             async first() {
               if (!sql.startsWith("INSERT INTO assets")) throw new Error(`Unexpected first query: ${sql}`);
-              const [userId, name, category, code, amount, currency, annualRate, note] = values;
+              const [userId, name, category, code, amount, currency, annualRate, investmentStrategy, investmentAmount, note] = values;
               const row = {
                 id: nextId++, user_id: userId, name, category, code, amount, currency,
-                annual_rate: annualRate, note, created_at: "2026-08-03 00:00:00",
+                annual_rate: annualRate, investment_strategy: investmentStrategy ?? "none", investment_amount: investmentAmount ?? null, note: note ?? "", created_at: "2026-08-03 00:00:00",
               };
               rows.push(row);
               return row;
@@ -39,6 +39,14 @@ function createAssetDb() {
                 const row = rows.find((item) => item.id === id && item.user_id === userId);
                 if (!row) return { meta: { changes: 0 } };
                 row.annual_rate = annualRate;
+                return { meta: { changes: 1 } };
+              }
+              if (sql.startsWith("UPDATE assets SET investment_strategy")) {
+                const [strategy, investmentAmount, id, userId] = values;
+                const row = rows.find((item) => item.id === id && item.user_id === userId);
+                if (!row) return { meta: { changes: 0 } };
+                row.investment_strategy = strategy;
+                row.investment_amount = investmentAmount;
                 return { meta: { changes: 1 } };
               }
               if (sql.startsWith("UPDATE assets SET amount")) {
@@ -187,6 +195,23 @@ test("asset API validates input and isolates CRUD by signed-in user", async () =
   assert.equal((await handlers.DELETE(new Request(`http://local/api/assets?id=${asset.id}`, { method: "DELETE" }))).status, 200);
 });
 
+test("fund investment strategy can be changed after creation", async () => {
+  const { createAssetsHandlers } = await load("app/api/assets/handlers.ts");
+  const db = createAssetDb();
+  const handlers = createAssetsHandlers({ getAuthenticatedUser: async () => ({ id: 1 }), getAssetsDb: async () => db });
+  const created = await handlers.POST(new Request("http://local/api/assets", {
+    method: "POST",
+    body: JSON.stringify({ name: "指数基金", category: "fund", code: "510300", amount: 1000, currency: "CNY", annualRate: 5 }),
+  }));
+  const asset = (await created.json()).asset;
+  const changed = await handlers.PATCH(new Request("http://local/api/assets", {
+    method: "PATCH",
+    body: JSON.stringify({ id: asset.id, investmentStrategy: "monthly", investmentAmount: 500 }),
+  }));
+  assert.equal(changed.status, 200);
+  assert.equal((await changed.json()).investmentStrategy, "monthly");
+});
+
 test("asset API rejects unsafe numeric values", async () => {
   const { createAssetsHandlers } = await load("app/api/assets/handlers.ts");
   const handlers = createAssetsHandlers({
@@ -264,7 +289,58 @@ function fundPage(pageIndex) {
   return { Data: { LSJZList: points, TotalCount: 2000 } };
 }
 
-test("market API authenticates, covers ten years, caches, and limits upstream concurrency", async () => {
+function historicalRateResponse(url, rate = 7) {
+  const date = new URL(url).searchParams.get("to");
+  return Response.json([{ date, base: "USD", quote: "CNY", rate }]);
+}
+
+test("historical USD/CNY rate uses the latest valid rate not after the market date", async () => {
+  const { fetchHistoricalUsdCnyRate } = await load("app/api/market/historical-rates.ts");
+  let requestedUrl = "";
+  const result = await fetchHistoricalUsdCnyRate(async (url) => {
+    requestedUrl = String(url);
+    return Response.json([
+      { date: "2025-07-29", base: "USD", quote: "CNY", rate: 7.1 },
+      { date: "2025-07-31", base: "USD", quote: "CNY", rate: 7.2 },
+      { date: "2025-08-01", base: "USD", quote: "CNY", rate: 7.3 },
+    ]);
+  }, "2025-07-31");
+  assert.deepEqual(result, { date: "2025-07-31", rate: 7.2 });
+  assert.ok(requestedUrl.includes("base=USD"));
+  assert.ok(requestedUrl.includes("quotes=CNY"));
+  assert.ok(requestedUrl.includes("from=2025-07-24"));
+  assert.ok(requestedUrl.includes("to=2025-07-31"));
+});
+
+test("historical USD/CNY rate rejects an empty rate window", async () => {
+  const { fetchHistoricalUsdCnyRate } = await load("app/api/market/historical-rates.ts");
+  await assert.rejects(
+    fetchHistoricalUsdCnyRate(async () => Response.json([]), "2025-07-31"),
+    /没有找到对应日期的美元人民币历史汇率/,
+  );
+});
+
+test("historical USD/CNY rate reports upstream network failures clearly", async () => {
+  const { fetchHistoricalUsdCnyRate } = await load("app/api/market/historical-rates.ts");
+  await assert.rejects(
+    fetchHistoricalUsdCnyRate(async () => { throw new TypeError("fetch failed"); }, "2025-07-31"),
+    /美元人民币历史汇率服务暂不可用/,
+  );
+});
+
+test("historical USD/CNY rate retries one transient network failure", async () => {
+  const { fetchHistoricalUsdCnyRate } = await load("app/api/market/historical-rates.ts");
+  let attempts = 0;
+  const result = await fetchHistoricalUsdCnyRate(async (url) => {
+    attempts += 1;
+    if (attempts === 1) throw new TypeError("fetch failed");
+    return historicalRateResponse(url, 7.2);
+  }, "2025-07-31");
+  assert.equal(attempts, 2);
+  assert.deepEqual(result, { date: "2025-07-31", rate: 7.2 });
+});
+
+test("market API authenticates, targets the requested lookback, and caches", async () => {
   const { createMarketHandler } = await load("app/api/market/handler.ts");
   let active = 0;
   let maximumActive = 0;
@@ -275,7 +351,12 @@ test("market API authenticates, covers ten years, caches, and limits upstream co
     maximumActive = Math.max(maximumActive, active);
     await new Promise((resolve) => setTimeout(resolve, 1));
     active -= 1;
-    const pageIndex = Number(new URL(url).searchParams.get("pageIndex"));
+    const params = new URL(url).searchParams;
+    if (params.has("startDate")) {
+      const date = params.get("endDate");
+      return Response.json({ Data: { LSJZList: [{ FSRQ: date, DWJZ: "1", LJJZ: "1" }] }, TotalCount: 1, PageSize: 20, PageIndex: 1 });
+    }
+    const pageIndex = Number(params.get("pageIndex"));
     return Response.json(fundPage(pageIndex));
   };
   const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch, maxConcurrent: 3 });
@@ -284,7 +365,7 @@ test("market API authenticates, covers ten years, caches, and limits upstream co
   assert.equal(first.status, 200);
   const payload = await first.json();
   assert.ok(Date.parse(payload.endDate) - Date.parse(payload.startDate) >= 3400 * 86400000);
-  assert.ok(calls >= 35);
+  assert.equal(calls, 2);
   assert.ok(maximumActive <= 3);
 
   const beforeCache = calls;
@@ -293,6 +374,151 @@ test("market API authenticates, covers ten years, caches, and limits upstream co
 
   const unauthorized = createMarketHandler({ authenticate: async () => null, fetch });
   assert.equal((await unauthorized(request)).status, 401);
+});
+
+test("fund returns request only the latest page and the target-date window", async () => {
+  const { createMarketHandler } = await load("app/api/market/handler.ts");
+  const urls = [];
+  const fetch = async (url) => {
+    urls.push(String(url));
+    const params = new URL(url).searchParams;
+    if (params.has("startDate")) {
+      return Response.json({ Data: { LSJZList: [{ FSRQ: "2025-08-03", DWJZ: "1.5", LJJZ: "1.5" }] }, TotalCount: 1, PageSize: 20, PageIndex: 1 });
+    }
+    return Response.json({ Data: { LSJZList: [{ FSRQ: "2026-08-03", DWJZ: "2", LJJZ: "2" }] }, TotalCount: 2000, PageSize: 20, PageIndex: 1 });
+  };
+  const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
+  const response = await handler(new Request("http://local/api/market?code=021000&category=fund&days=365"));
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.startDate, "2025-08-03");
+  assert.equal(payload.endDate, "2026-08-03");
+  assert.equal(urls.length, 2);
+  assert.ok(urls[1].includes("startDate=2025-07-04"));
+  assert.ok(urls[1].includes("endDate=2025-08-03"));
+});
+
+test("fund returns use the earliest net value when the target date predates the fund", async () => {
+  const { createMarketHandler } = await load("app/api/market/handler.ts");
+  const urls = [];
+  const fetch = async (url) => {
+    urls.push(String(url));
+    const params = new URL(url).searchParams;
+    if (params.has("startDate")) return Response.json({ Data: { LSJZList: [] }, TotalCount: 0, PageSize: 20, PageIndex: 1 });
+    if (params.get("pageIndex") === "3") {
+      return Response.json({ Data: { LSJZList: [{ FSRQ: "2024-03-20", DWJZ: "1.01", LJJZ: "1.01" }, { FSRQ: "2024-03-19", DWJZ: "1", LJJZ: "1" }] }, TotalCount: 42, PageSize: 20, PageIndex: 3 });
+    }
+    return Response.json({ Data: { LSJZList: [{ FSRQ: "2026-08-03", DWJZ: "2", LJJZ: "2" }] }, TotalCount: 42, PageSize: 20, PageIndex: 1 });
+  };
+  const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
+  const response = await handler(new Request("http://local/api/market?code=021000&category=fund&days=3650"));
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.startDate, "2024-03-19");
+  assert.equal(payload.endDate, "2026-08-03");
+  assert.equal(urls.length, 3);
+  assert.ok(urls.some((url) => url.includes("startDate=")));
+  assert.ok(urls.some((url) => url.includes("pageIndex=3")));
+});
+
+test("stock returns trim overfetched history to the requested lookback", async () => {
+  const { createMarketHandler } = await load("app/api/market/handler.ts");
+  const urls = [];
+  const fetch = async (url) => {
+    urls.push(String(url));
+    if (String(url).includes("frankfurter.dev")) return historicalRateResponse(url);
+    if (String(url).includes("usQQQ,day,,,2,qfq")) {
+      return Response.json({ data: { usQQQ: { qt: { usQQQ: ["delay", "QQQ", "QQQ.OQ"] } } } });
+    }
+    if (String(url).includes("usQQQ.OQ,day,,,2,qfq")) {
+      return Response.json({ data: { "usQQQ.OQ": { day: [["2026-08-02", "139", "139"], ["2026-08-03", "140", "140"]] } } });
+    }
+    return Response.json({ data: { "usQQQ.OQ": { day: [["2025-08-03", "100", "100"]] } } });
+  };
+  const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
+  const response = await handler(new Request("http://local/api/market?code=QQQ&category=stock&days=365"));
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.startDate, "2025-08-03");
+  assert.equal(payload.endDate, "2026-08-03");
+  assert.equal(urls.length, 5);
+  assert.ok(urls[2].includes("day,2025-07-04,2025-08-03,30,qfq"));
+});
+
+test("US stock returns are converted to CNY with historical exchange rates", async () => {
+  const { createMarketHandler } = await load("app/api/market/handler.ts");
+  let activeRates = 0;
+  let maximumActiveRates = 0;
+  const fetch = async (url) => {
+    const value = String(url);
+    if (value.includes("frankfurter.dev")) {
+      activeRates += 1;
+      maximumActiveRates = Math.max(maximumActiveRates, activeRates);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      activeRates -= 1;
+      const date = new URL(value).searchParams.get("to");
+      return historicalRateResponse(value, date === "2025-08-03" ? 7.2 : 6.6);
+    }
+    if (value.includes("usQQQ,day,,,2,qfq")) {
+      return Response.json({ data: { usQQQ: { qt: { usQQQ: ["delay", "QQQ", "QQQ.OQ"] } } } });
+    }
+    if (value.includes("usQQQ.OQ,day,,,2,qfq")) {
+      return Response.json({ data: { "usQQQ.OQ": { day: [["2026-08-02", "119", "119"], ["2026-08-03", "120", "120"]] } } });
+    }
+    return Response.json({ data: { "usQQQ.OQ": { day: [["2025-08-03", "100", "100"]] } } });
+  };
+  const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
+  const response = await handler(new Request("http://local/api/market?code=QQQ&category=stock&days=365"));
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.ok(Math.abs(payload.periodReturn - 10) < 1e-9);
+  assert.ok(Math.abs(payload.annualRate - 10) < 1e-9);
+  assert.match(payload.source, /人民币汇率调整/);
+  assert.equal(maximumActiveRates, 1);
+});
+
+test("US stock return fails instead of falling back to USD when historical rates are missing", async () => {
+  const { createMarketHandler } = await load("app/api/market/handler.ts");
+  const fetch = async (url) => {
+    const value = String(url);
+    if (value.includes("frankfurter.dev")) return Response.json([]);
+    if (value.includes("usQQQ,day,,,2,qfq")) {
+      return Response.json({ data: { usQQQ: { qt: { usQQQ: ["delay", "QQQ", "QQQ.OQ"] } } } });
+    }
+    if (value.includes("usQQQ.OQ,day,,,2,qfq")) {
+      return Response.json({ data: { "usQQQ.OQ": { day: [["2026-08-02", "119", "119"], ["2026-08-03", "120", "120"]] } } });
+    }
+    return Response.json({ data: { "usQQQ.OQ": { day: [["2025-08-03", "100", "100"]] } } });
+  };
+  const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
+  const response = await handler(new Request("http://local/api/market?code=QQQ&category=stock&days=365"));
+  assert.equal(response.status, 502);
+  assert.match((await response.json()).error, /历史汇率/);
+});
+
+test("stock returns use the earliest price when the target date predates listing", async () => {
+  const { createMarketHandler } = await load("app/api/market/handler.ts");
+  const urls = [];
+  const fetch = async (url) => {
+    urls.push(String(url));
+    if (String(url).includes("frankfurter.dev")) return historicalRateResponse(url);
+    if (String(url).includes("usNEW,day,,,2,qfq")) {
+      return Response.json({ data: { usNEW: { qt: { usNEW: ["delay", "NEW", "NEW.OQ"] } } } });
+    }
+    if (String(url).includes("usNEW.OQ,day,,,2,qfq")) {
+      return Response.json({ data: { "usNEW.OQ": { day: [["2026-08-02", "139", "139"], ["2026-08-03", "140", "140"]] } } });
+    }
+    if (String(url).includes(",30,qfq")) return Response.json({ data: { "usNEW.OQ": { day: [] } } });
+    return Response.json({ data: { "usNEW.OQ": { day: [["2024-03-19", "100", "100"], ["2026-08-03", "140", "140"]] } } });
+  };
+  const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
+  const response = await handler(new Request("http://local/api/market?code=NEW&category=stock&days=3650"));
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.startDate, "2024-03-19");
+  assert.equal(payload.endDate, "2026-08-03");
+  assert.equal(urls.length, 6);
+  assert.ok(urls[3].includes(",2000,qfq"));
 });
 
 test("market API aborts slow upstream requests", async () => {
@@ -305,25 +531,28 @@ test("market API aborts slow upstream requests", async () => {
   assert.equal(response.status, 504);
 });
 
-test("QQQ ten-year history stays within Tencent's request limit", async () => {
+test("QQQ ten-year history uses a target-date window", async () => {
   const { createMarketHandler } = await load("app/api/market/handler.ts");
   const urls = [];
   const fetch = async (url) => {
     urls.push(String(url));
-    if (String(url).includes("day,,,2,qfq")) {
+    if (String(url).includes("frankfurter.dev")) return historicalRateResponse(url);
+    if (String(url).includes("usQQQ,day,,,2,qfq")) {
       return Response.json({ data: { usQQQ: { qt: { usQQQ: ["delay", "QQQ", "QQQ.OQ"] } } } });
     }
-    if (String(url).includes("usQQQ.OQ")) {
-      return Response.json({ data: { "usQQQ.OQ": { day: [["2018-08-15", "180", "180"], ["2026-07-31", "687.99", "687.99"]] } } });
+    if (String(url).includes("usQQQ.OQ,day,,,2,qfq")) {
+      return Response.json({ data: { "usQQQ.OQ": { day: [["2026-07-30", "680", "680"], ["2026-07-31", "687.99", "687.99"]] } } });
     }
-    return Response.json({ data: { usQQQ: { day: [["2011-06-02", "57.18", "57.18"], ["2026-07-31", "687.99", "687.99"]] } } });
+    return Response.json({ data: { "usQQQ.OQ": { day: [["2016-08-02", "100", "100"]] } } });
   };
   const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
   const response = await handler(new Request("http://local/api/market?code=QQQ&category=stock&days=3650"));
   assert.equal(response.status, 200);
   const payload = await response.json();
-  assert.ok(Date.parse(payload.startDate) <= Date.parse("2016-08-03"));
-  assert.ok(urls.some((url) => url.includes("day,,,2000,qfq") && url.includes("usQQQ")));
+  assert.equal(payload.startDate, "2016-08-02");
+  assert.equal(payload.endDate, "2026-07-31");
+  assert.equal(urls.length, 5);
+  assert.ok(urls[2].includes("day,2016-07-03,2016-08-02,30,qfq"));
 });
 
 const validRates = ["USD", "HKD", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "CHF"].map((quote) => ({
@@ -340,6 +569,19 @@ test("portfolio totals are unavailable instead of partial when an exchange rate 
   const result = calculatePortfolio(assets, { CNY: 1, USD: 7 }, 3);
   assert.equal(result.total, 80000);
   assert.ok(result.forecast > result.total);
+});
+
+test("fund forecasts include scheduled investments in the fund currency", async () => {
+  const { calculatePortfolio } = await load("app/portfolio.ts");
+  const asOf = new Date("2026-01-01T12:00:00Z");
+  const base = { category: "fund", code: "510300", amount: 100000, currency: "CNY", annual_rate: 0, investment_amount: 10000 };
+  const monthly = calculatePortfolio([{ ...base, investment_strategy: "monthly" }], { CNY: 1 }, 1, asOf);
+  const daily = calculatePortfolio([{ ...base, investment_strategy: "daily" }], { CNY: 1 }, 1, asOf);
+  assert.equal(monthly.forecast, 220000);
+  assert.ok(daily.forecast > monthly.forecast);
+
+  const usd = calculatePortfolio([{ ...base, code: "QQQ", currency: "USD", investment_strategy: "yearly" }], { USD: 7 }, 1, asOf);
+  assert.equal(usd.forecast, 770000);
 });
 
 test("exchange-rate API falls back to stale cache and rejects incomplete data", async () => {

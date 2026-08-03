@@ -13,6 +13,8 @@ type Asset = {
   amount: number;
   currency: Currency;
   annual_rate: number;
+  investment_strategy?: "none" | "monthly" | "weekly" | "yearly" | "daily" | null;
+  investment_amount?: number | null;
   note: string;
   created_at: string;
 };
@@ -66,6 +68,9 @@ const originalMoney = (cents: number, currency: Currency) =>
 
 const toCny = (asset: Asset, rates: Partial<Record<Currency, number>>) =>
   asset.amount * (rates[asset.currency] ?? 0);
+
+const supportsInvestment = (asset: Pick<Asset, "category" | "code">) =>
+  asset.category === "fund" || (asset.category === "stock" && Boolean(asset.code && /^[A-Z][A-Z0-9.-]*$/i.test(asset.code)));
 
 export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null);
@@ -158,12 +163,7 @@ export default function Dashboard() {
   }, [assets, exchangeRates]);
 
   const filtered = activeFilter === "all" ? assets : assets.filter((asset) => asset.category === activeFilter);
-  const chartValues = Array.from({ length: horizon + 1 }, (_, index) => {
-    return assets.reduce((sum, asset) => {
-      const rate = asset.category === "fixed" ? 0 : asset.annual_rate / 100;
-      return sum + toCny(asset, exchangeRates) * Math.pow(1 + rate, index);
-    }, 0);
-  });
+  const chartValues = Array.from({ length: horizon + 1 }, (_, index) => calculatePortfolio(assets, exchangeRates, index)?.forecast ?? 0);
   const minChart = Math.min(...chartValues);
   const maxChart = Math.max(...chartValues);
 
@@ -203,6 +203,7 @@ export default function Dashboard() {
         body: JSON.stringify({
           name: form.get("name"), category, code,
           amount: Number(form.get("amount")), currency: form.get("currency"), annualRate: rate, note: form.get("note"),
+          investmentStrategy: form.get("investmentStrategy") || "none", investmentAmount: Number(form.get("investmentAmount")) || undefined,
         }),
       });
       const data = await response.json();
@@ -290,6 +291,10 @@ export default function Dashboard() {
     setUpdating(true);
     const form = new FormData(event.currentTarget);
     try {
+      const investment = supportsInvestment(selected) ? {
+        investmentStrategy: form.get("investmentStrategy") || "none",
+        investmentAmount: Number(form.get("investmentAmount")) || undefined,
+      } : {};
       const response = await fetch("/api/assets", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -297,6 +302,7 @@ export default function Dashboard() {
           id: selected.id,
           amount: Number(form.get("amount")),
           currency: form.get("currency"),
+          ...investment,
         }),
       });
       const data = await response.json();
@@ -305,7 +311,13 @@ export default function Dashboard() {
         return;
       }
       if (!response.ok) return setToast(data.error || "修改失败，请重试");
-      const updated = { ...selected, amount: data.amount, currency: data.currency as Currency };
+      const updated = {
+        ...selected,
+        amount: data.amount,
+        currency: data.currency as Currency,
+        investment_strategy: data.investmentStrategy !== undefined ? data.investmentStrategy : selected.investment_strategy,
+        investment_amount: data.investmentAmount !== undefined ? data.investmentAmount : selected.investment_amount,
+      };
       setAssets((current) => current.map((asset) => asset.id === updated.id ? updated : asset));
       setSelected(updated);
       await refreshHistory();
@@ -437,7 +449,7 @@ export default function Dashboard() {
               const cnyAmount = toCny(asset, exchangeRates);
               return <button className="asset-row" key={asset.id} onClick={() => setSelected(asset)}>
                 <span className="asset-icon" style={{ background: `${meta.color}18`, color: meta.color }}>{meta.short}</span>
-                <span className="asset-main"><strong>{asset.name}</strong><small>{meta.name}{asset.code ? ` · ${asset.code}` : ""} · {asset.note}</small></span>
+                <span className="asset-main"><strong>{asset.name}</strong><small>{meta.name}{asset.code ? ` · ${asset.code}` : ""}{asset.investment_strategy && asset.investment_strategy !== "none" ? ` · 定投${asset.investment_amount ? ` ${asset.investment_amount / 100}` : ""}` : ""} · {asset.note}</small></span>
                 <span className="asset-rate"><small>{asset.category === "fixed" ? "不计收益" : "预测年化"}</small><strong className={asset.annual_rate < 0 ? "negative" : ""}>{asset.category === "fixed" ? "—" : `${asset.annual_rate.toFixed(2)}%`}</strong></span>
                 <span className="asset-amount"><strong>{originalMoney(asset.amount, asset.currency)}</strong><small>{asset.currency === "CNY" ? "人民币" : exchangeRates[asset.currency] ? `≈ ${money(cnyAmount)} · ${currencyMeta[asset.currency]}` : "等待汇率"}{!missingExchangeRate && total && cnyAmount ? ` · ${(cnyAmount / total * 100).toFixed(1)}%` : ""}</small></span>
                 <span className="chevron">›</span>
@@ -462,12 +474,13 @@ export default function Dashboard() {
           <button className="modal-close" onClick={() => setSelected(null)} aria-label="关闭">×</button>
           <span className="asset-icon large" style={{ background: `${categoryMeta[selected.category].color}18`, color: categoryMeta[selected.category].color }}>{categoryMeta[selected.category].short}</span>
           <span className="card-kicker">{categoryMeta[selected.category].name}</span><h2>{selected.name}</h2><p>{selected.note || "暂无备注"}</p>
-          <form className="asset-edit-form" key={`${selected.id}-${selected.amount}-${selected.currency}`} onSubmit={updateAsset}>
-            <div className="edit-heading"><strong>修改资产</strong><span>仅可修改币种和当前市值</span></div>
+          <form className="asset-edit-form" key={`${selected.id}-${selected.amount}-${selected.currency}-${selected.investment_strategy}-${selected.investment_amount}`} onSubmit={updateAsset}>
+            <div className="edit-heading"><strong>修改资产</strong><span>{supportsInvestment(selected) ? "可修改市值、币种和定投设置" : "仅可修改币种和当前市值"}</span></div>
             <div className="form-two"><label><span>计价币种</span><select name="currency" defaultValue={selected.currency}>{(Object.keys(currencyMeta) as Currency[]).map((code) => <option value={code} key={code}>{currencyMeta[code]} · {code}</option>)}</select></label><label><span>当前市值</span><input required name="amount" type="number" min="0.01" step="0.01" defaultValue={(selected.amount / 100).toFixed(2)} /></label></div>
+            {supportsInvestment(selected) && <EditableInvestmentFields asset={selected} />}
             <button className="save-edit-button" disabled={updating}>{updating ? "正在保存…" : "保存修改"}</button>
           </form>
-          <dl>{selected.currency !== "CNY" && <div><dt>折合人民币</dt><dd>{exchangeRates[selected.currency] ? money(toCny(selected, exchangeRates)) : "等待汇率"}</dd></div>}<div><dt>预测年化</dt><dd>{selected.category === "fixed" ? "不计收益" : `${selected.annual_rate.toFixed(2)}%`}</dd></div>{selected.code && <div><dt>资产代码</dt><dd>{selected.code}</dd></div>}<div><dt>{horizon} 年后预计</dt><dd>{originalMoney(selected.amount * Math.pow(1 + (selected.category === "fixed" ? 0 : selected.annual_rate / 100), horizon), selected.currency)}</dd></div></dl>
+          <dl>{selected.currency !== "CNY" && <div><dt>折合人民币</dt><dd>{exchangeRates[selected.currency] ? money(toCny(selected, exchangeRates)) : "等待汇率"}</dd></div>}<div><dt>预测年化</dt><dd>{selected.category === "fixed" ? "不计收益" : `${selected.annual_rate.toFixed(2)}%`}</dd></div>{selected.code && <div><dt>资产代码</dt><dd>{selected.code}</dd></div>}<div><dt>{horizon} 年后预计</dt><dd>{originalMoney(calculatePortfolio([selected], { [selected.currency]: 1 }, horizon)?.forecast ?? selected.amount, selected.currency)}</dd></div></dl>
           <button className="danger-button" onClick={() => removeAsset(selected)}>删除这项资产</button>
         </aside>
       </div>}
@@ -475,6 +488,14 @@ export default function Dashboard() {
       {toast && <div className="toast" role="status">{toast}</div>}
     </main>
   );
+}
+
+function EditableInvestmentFields({ asset }: { asset: Asset }) {
+  const [strategy, setStrategy] = useState(asset.investment_strategy || "none");
+  return <div className="form-two">
+    <label><span>定投策略</span><select name="investmentStrategy" value={strategy} onChange={(event) => setStrategy(event.target.value as Asset["investment_strategy"] || "none")}><option value="none">不定投</option><option value="monthly">每月第一个交易日</option><option value="weekly">每周第一个交易日</option><option value="yearly">每年第一个交易日</option><option value="daily">每个交易日</option></select></label>
+    <label><span>定投金额（{asset.currency}）</span><input required={strategy !== "none"} disabled={strategy === "none"} name="investmentAmount" type="number" min="0.01" step="0.01" defaultValue={asset.investment_amount ? (asset.investment_amount / 100).toFixed(2) : ""} /></label>
+  </div>;
 }
 
 function HistorySection({ history }: { history: HistoryEntry[] }) {
@@ -538,6 +559,7 @@ function HistorySection({ history }: { history: HistoryEntry[] }) {
 function AssetForm({ onSubmit, saving }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; saving: boolean }) {
   const [category, setCategory] = useState<Category>("stock");
   const [currency, setCurrency] = useState<Currency>("CNY");
+  const [investmentStrategy, setInvestmentStrategy] = useState("none");
   const needsCode = ["stock", "fund", "money"].includes(category);
   const needsRate = ["deposit", "housing"].includes(category);
   return <form className="asset-form" onSubmit={onSubmit}>
@@ -550,6 +572,7 @@ function AssetForm({ onSubmit, saving }: { onSubmit: (event: FormEvent<HTMLFormE
     }} /><small>支持国内 6 位代码和美股代码；QQQ 等美股代码会自动选择美元，也可手动修改</small></label>}
     <div className="form-two"><label><span>计价币种</span><select name="currency" value={currency} onChange={(event) => setCurrency(event.target.value as Currency)}>{(Object.keys(currencyMeta) as Currency[]).map((code) => <option value={code} key={code}>{currencyMeta[code]} · {code}</option>)}</select></label><label><span>当前市值（{currency}）</span><input required name="amount" type="number" min="0.01" step="0.01" placeholder={currency === "CNY" ? "100000" : "10000"} /></label></div>
     {needsRate && <label><span>年利率（%）</span><input required name="annualRate" type="number" step="0.01" min="0" placeholder="2.60" /></label>}
+    {category === "fund" && <div className="form-two"><label><span>定投策略</span><select name="investmentStrategy" value={investmentStrategy} onChange={(event) => setInvestmentStrategy(event.target.value)}><option value="none">不定投</option><option value="monthly">每月第一个交易日</option><option value="weekly">每周第一个交易日</option><option value="yearly">每年第一个交易日</option><option value="daily">每个交易日</option></select></label><label><span>定投金额（{currency}）</span><input required={investmentStrategy !== "none"} name="investmentAmount" type="number" min="0.01" step="0.01" placeholder="1000" /></label></div>}
     <label><span>备注</span><input name="note" placeholder="可选，例如到期日或用途" /></label>
     <button className="primary-button submit" disabled={saving}>{saving ? "正在保存…" : "确认记录"}</button>
   </form>;

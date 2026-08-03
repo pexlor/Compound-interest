@@ -9,6 +9,8 @@ export type AssetRow = {
   amount: number;
   currency: string;
   annual_rate: number;
+  investment_strategy: string;
+  investment_amount: number | null;
   note: string;
   created_at: string;
 };
@@ -38,6 +40,8 @@ async function initialize(db: D1Database) {
         amount INTEGER NOT NULL,
         currency TEXT NOT NULL DEFAULT 'CNY',
         annual_rate REAL NOT NULL DEFAULT 0,
+        investment_strategy TEXT NOT NULL DEFAULT 'none',
+        investment_amount INTEGER,
         note TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -82,6 +86,12 @@ async function initialize(db: D1Database) {
   }
   if (!columns.results.some((column) => column.name === "currency")) {
     await db.prepare("ALTER TABLE assets ADD COLUMN currency TEXT NOT NULL DEFAULT 'CNY'").run();
+  }
+  if (!columns.results.some((column) => column.name === "investment_strategy")) {
+    await db.prepare("ALTER TABLE assets ADD COLUMN investment_strategy TEXT NOT NULL DEFAULT 'none'").run();
+  }
+  if (!columns.results.some((column) => column.name === "investment_amount")) {
+    await db.prepare("ALTER TABLE assets ADD COLUMN investment_amount INTEGER").run();
   }
 
   await db.batch([

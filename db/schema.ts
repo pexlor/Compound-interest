@@ -27,6 +27,8 @@ export const assets = sqliteTable("assets", {
   amount: integer("amount").notNull(),
   currency: text("currency").notNull().default("CNY"),
   annualRate: real("annual_rate").notNull().default(0),
+  investmentStrategy: text("investment_strategy").notNull().default("none"),
+  investmentAmount: integer("investment_amount"),
   note: text("note").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

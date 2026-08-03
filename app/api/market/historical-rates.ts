@@ -1,0 +1,35 @@
+type HistoricalRateRow = { date?: string; base?: string; quote?: string; rate?: number };
+
+export async function fetchHistoricalUsdCnyRate(
+  fetcher: (url: string) => Promise<Response>,
+  marketDate: string,
+) {
+  const marketTime = Date.parse(marketDate);
+  if (!Number.isFinite(marketTime)) throw new Error("无效的市场行情日期");
+
+  const endpoint = new URL("https://api.frankfurter.dev/v2/rates");
+  endpoint.searchParams.set("base", "USD");
+  endpoint.searchParams.set("quotes", "CNY");
+  endpoint.searchParams.set("from", new Date(marketTime - 7 * 86400000).toISOString().slice(0, 10));
+  endpoint.searchParams.set("to", marketDate);
+  let response: Response | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      response = await fetcher(endpoint.toString());
+      break;
+    } catch {
+      if (attempt === 1) throw new Error("美元人民币历史汇率服务暂不可用");
+    }
+  }
+  if (!response?.ok) throw new Error("美元人民币历史汇率服务暂不可用");
+
+  const rows = await response.json() as HistoricalRateRow[];
+  const selected = (Array.isArray(rows) ? rows : [])
+    .filter((row) => row.base === "USD" && row.quote === "CNY"
+      && Number.isFinite(row.rate) && (row.rate ?? 0) > 0
+      && Number.isFinite(Date.parse(row.date ?? "")) && Date.parse(row.date ?? "") <= marketTime)
+    .sort((a, b) => Date.parse(a.date ?? "") - Date.parse(b.date ?? ""))
+    .at(-1);
+  if (!selected?.date || !selected.rate) throw new Error("没有找到对应日期的美元人民币历史汇率");
+  return { date: selected.date, rate: selected.rate };
+}
