@@ -78,6 +78,25 @@ async function initialize(db: D1Database) {
         UNIQUE (user_id, snapshot_date)
       )
     `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS market_returns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL,
+        code TEXT NOT NULL,
+        lookback_days INTEGER NOT NULL,
+        calculation_date TEXT NOT NULL,
+        annual_rate REAL NOT NULL,
+        period_return REAL NOT NULL,
+        requested_days INTEGER NOT NULL,
+        actual_days INTEGER NOT NULL,
+        history_limited INTEGER NOT NULL DEFAULT 0,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        source TEXT NOT NULL,
+        calculated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (category, code, lookback_days, calculation_date)
+      )
+    `),
   ]);
 
   const columns = await db.prepare("PRAGMA table_info(assets)").all<{ name: string }>();
@@ -100,6 +119,7 @@ async function initialize(db: D1Database) {
     db.prepare("CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions (expires_at)"),
     db.prepare("CREATE INDEX IF NOT EXISTS asset_history_user_id_idx ON asset_history (user_id)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS market_returns_lookup_idx ON market_returns (category, code, lookback_days, calculation_date)"),
   ]);
 }
 

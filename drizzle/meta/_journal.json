@@ -36,6 +36,13 @@
       "when": 1785745471019,
       "tag": "0004_dizzy_medusa",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1785759847477,
+      "tag": "0005_fair_carnage",
+      "breakpoints": true
     }
   ]
 }

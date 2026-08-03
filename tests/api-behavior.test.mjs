@@ -115,6 +115,66 @@ function createSnapshotDb() {
   };
 }
 
+function createMarketReturnDb() {
+  const rows = new Map();
+  return {
+    rows,
+    prepare(sql) {
+      return {
+        bind(...values) {
+          return {
+            async first() {
+              if (sql.startsWith("INSERT INTO market_returns")) {
+                const [category, code, lookbackDays, calculationDate, annualRate, periodReturn, requestedDays, actualDays, historyLimited, startDate, endDate, source, calculatedAt] = values;
+                const key = `${category}:${code}:${lookbackDays}:${calculationDate}`;
+                const row = {
+                  id: rows.get(key)?.id ?? rows.size + 1,
+                  category, code, lookback_days: lookbackDays, calculation_date: calculationDate,
+                  annual_rate: annualRate, period_return: periodReturn, requested_days: requestedDays,
+                  actual_days: actualDays, history_limited: historyLimited, start_date: startDate,
+                  end_date: endDate, source, calculated_at: calculatedAt,
+                };
+                rows.set(key, row);
+                return row;
+              }
+              if (sql.includes("FROM market_returns") && sql.includes("calculation_date = ?")) {
+                return rows.get(`${values[0]}:${values[1]}:${values[2]}:${values[3]}`) ?? null;
+              }
+              if (sql.includes("FROM market_returns") && sql.includes("ORDER BY calculation_date DESC")) {
+                return [...rows.values()]
+                  .filter((row) => row.category === values[0] && row.code === values[1] && row.lookback_days === values[2])
+                  .sort((a, b) => b.calculation_date.localeCompare(a.calculation_date))[0] ?? null;
+              }
+              throw new Error(`Unexpected market return query: ${sql}`);
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+function sampleMarketReturn(overrides = {}) {
+  return {
+    category: "stock", code: "QQQ", lookbackDays: 1095, calculationDate: "2026-08-03",
+    annualRate: 8, periodReturn: 25.97, requestedDays: 1095, actualDays: 1096,
+    historyLimited: false, startDate: "2023-08-03", endDate: "2026-08-03",
+    source: "test", calculatedAt: "2026-08-03T04:10:00+08:00", ...overrides,
+  };
+}
+
+test("market return cache uses the Shanghai date and upserts one daily row", async () => {
+  const { findLatestMarketReturn, findMarketReturn, saveMarketReturn, shanghaiDate } = await load("db/market-returns.ts");
+  assert.equal(shanghaiDate(new Date("2026-08-02T20:10:00Z")), "2026-08-03");
+  const db = createMarketReturnDb();
+  await saveMarketReturn(db, sampleMarketReturn({ annualRate: 8 }));
+  await saveMarketReturn(db, sampleMarketReturn({ annualRate: 9 }));
+  assert.equal(db.rows.size, 1);
+  assert.equal([...db.rows.values()][0].annual_rate, 9);
+  assert.equal((await findMarketReturn(db, "stock", "QQQ", 1095, "2026-08-03")).annualRate, 9);
+  assert.equal((await findLatestMarketReturn(db, "stock", "QQQ", 1095)).calculationDate, "2026-08-03");
+});
+
 test("daily asset snapshot uses complete rates and overwrites the same date", async () => {
   const { calculateSnapshotTotal, recordDailySnapshot } = await load("db/history.ts");
   assert.equal(calculateSnapshotTotal([

@@ -52,3 +52,22 @@ export const assetHistory = sqliteTable("asset_history", {
 }, (table) => [
   uniqueIndex("asset_history_user_date_unique").on(table.userId, table.snapshotDate),
 ]);
+
+export const marketReturns = sqliteTable("market_returns", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  category: text("category").notNull(),
+  code: text("code").notNull(),
+  lookbackDays: integer("lookback_days").notNull(),
+  calculationDate: text("calculation_date").notNull(),
+  annualRate: real("annual_rate").notNull(),
+  periodReturn: real("period_return").notNull(),
+  requestedDays: integer("requested_days").notNull(),
+  actualDays: integer("actual_days").notNull(),
+  historyLimited: integer("history_limited", { mode: "boolean" }).notNull().default(false),
+  startDate: text("start_date").notNull(),
+  endDate: text("end_date").notNull(),
+  source: text("source").notNull(),
+  calculatedAt: text("calculated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("market_returns_key_date_unique").on(table.category, table.code, table.lookbackDays, table.calculationDate),
+]);
