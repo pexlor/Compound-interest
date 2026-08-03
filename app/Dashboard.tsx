@@ -1,10 +1,20 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { calculatePortfolio } from "./portfolio";
 
 type Category = "stock" | "fund" | "money" | "deposit" | "housing" | "fixed";
 type Currency = "CNY" | "USD" | "HKD" | "EUR" | "JPY" | "GBP" | "SGD" | "AUD" | "CAD" | "CHF";
+type MarketReturnMeta = {
+  annualRate: number;
+  requestedDays: number;
+  actualDays: number;
+  historyLimited: boolean;
+  startDate: string;
+  endDate: string;
+  calculationDate: string;
+  stale?: boolean;
+};
 type Asset = {
   id: number;
   name: string;
@@ -17,6 +27,7 @@ type Asset = {
   investment_amount?: number | null;
   note: string;
   created_at: string;
+  market_return?: MarketReturnMeta;
 };
 type User = { id: number; email: string; displayName: string };
 type HistoryEntry = {
@@ -72,11 +83,14 @@ const toCny = (asset: Asset, rates: Partial<Record<Currency, number>>) =>
 const supportsInvestment = (asset: Pick<Asset, "category" | "code">) =>
   asset.category === "fund" || (asset.category === "stock" && Boolean(asset.code && /^[A-Z][A-Z0-9.-]*$/i.test(asset.code)));
 
+const marketKey = (category: string, code: string) => `${category}:${code.trim().toUpperCase()}`;
+
 export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [marketRates, setMarketRates] = useState<Record<string, MarketReturnMeta>>({});
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [activeFilter, setActiveFilter] = useState<"all" | Category>("all");
   const [horizon, setHorizon] = useState(3);
@@ -91,6 +105,33 @@ export default function Dashboard() {
   const [exchangeDate, setExchangeDate] = useState("");
   const [exchangeLoading, setExchangeLoading] = useState(false);
   const [exchangeStale, setExchangeStale] = useState(false);
+
+  const loadMarketRates = useCallback(async (selectedLookback: number, notify = false, signal?: AbortSignal) => {
+    setSyncing(true);
+    try {
+      const response = await fetch(`/api/market?days=${selectedLookback * 365}`, { signal });
+      const data = await response.json() as { results?: Array<MarketReturnMeta & { category: string; code: string }>; errors?: unknown[]; error?: string };
+      if (response.status === 401) {
+        setUser(null);
+        return;
+      }
+      if (!response.ok) throw new Error(data.error || "读取市场收益失败");
+      const next = Object.fromEntries((data.results ?? []).map((result) => [
+        marketKey(result.category, result.code),
+        result,
+      ]));
+      setMarketRates(next);
+      if (notify) {
+        const failed = data.errors?.length ?? 0;
+        setToast(failed ? `已读取 ${data.results?.length ?? 0} 项，${failed} 项行情暂不可用` : `已读取 ${data.results?.length ?? 0} 项今日收益缓存`);
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (notify) setToast(error instanceof Error ? error.message : "读取市场收益失败");
+    } finally {
+      if (!signal?.aborted) setSyncing(false);
+    }
+  }, []);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -143,13 +184,25 @@ export default function Dashboard() {
   }, [user]);
 
   useEffect(() => {
+    if (!user) return;
+    const controller = new AbortController();
+    void loadMarketRates(lookback, false, controller.signal);
+    return () => controller.abort();
+  }, [loadMarketRates, lookback, user]);
+
+  useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(""), 2800);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const missingExchangeRate = assets.some((asset) => !exchangeRates[asset.currency]);
-  const portfolio = useMemo(() => calculatePortfolio(assets, exchangeRates, horizon), [assets, exchangeRates, horizon]);
+  const displayAssets = useMemo(() => assets.map((asset) => {
+    if (!asset.code) return asset;
+    const marketReturn = marketRates[marketKey(asset.category, asset.code)];
+    return marketReturn ? { ...asset, annual_rate: marketReturn.annualRate, market_return: marketReturn } : asset;
+  }), [assets, marketRates]);
+  const missingExchangeRate = displayAssets.some((asset) => !exchangeRates[asset.currency]);
+  const portfolio = useMemo(() => calculatePortfolio(displayAssets, exchangeRates, horizon), [displayAssets, exchangeRates, horizon]);
   const total = portfolio?.total ?? 0;
   const forecast = portfolio?.forecast ?? 0;
   const expectedGain = portfolio?.expectedGain ?? 0;
@@ -158,12 +211,14 @@ export default function Dashboard() {
   const grouped = useMemo(() => {
     return (Object.keys(categoryMeta) as Category[]).map((category) => ({
       category,
-      amount: assets.filter((item) => item.category === category).reduce((sum, item) => sum + toCny(item, exchangeRates), 0),
+      amount: displayAssets.filter((item) => item.category === category).reduce((sum, item) => sum + toCny(item, exchangeRates), 0),
     })).filter((item) => item.amount > 0);
-  }, [assets, exchangeRates]);
+  }, [displayAssets, exchangeRates]);
 
-  const filtered = activeFilter === "all" ? assets : assets.filter((asset) => asset.category === activeFilter);
-  const chartValues = Array.from({ length: horizon + 1 }, (_, index) => calculatePortfolio(assets, exchangeRates, index)?.forecast ?? 0);
+  const filtered = activeFilter === "all" ? displayAssets : displayAssets.filter((asset) => asset.category === activeFilter);
+  const limitedHistoryCount = displayAssets.filter((asset) => asset.market_return?.historyLimited).length;
+  const selectedMarket = selected ? displayAssets.find((asset) => asset.id === selected.id) ?? selected : null;
+  const chartValues = Array.from({ length: horizon + 1 }, (_, index) => calculatePortfolio(displayAssets, exchangeRates, index)?.forecast ?? 0);
   const minChart = Math.min(...chartValues);
   const maxChart = Math.max(...chartValues);
 
@@ -189,12 +244,16 @@ export default function Dashboard() {
       const form = new FormData(event.currentTarget);
       const category = form.get("category") as Category;
       let rate = Number(form.get("annualRate")) || 0;
+      let marketReturn: MarketReturnMeta | null = null;
       const code = String(form.get("code") || "").trim().toUpperCase();
       if (code && ["stock", "fund", "money"].includes(category)) {
         try {
           const marketResponse = await fetch(`/api/market?code=${encodeURIComponent(code)}&category=${category}&days=${lookback * 365}`);
           const market = await marketResponse.json();
-          if (marketResponse.ok) rate = Number(market.annualRate.toFixed(2));
+          if (marketResponse.ok) {
+            rate = Number(market.annualRate.toFixed(2));
+            marketReturn = market as MarketReturnMeta;
+          }
         } catch { /* retain manual/default rate */ }
       }
       const response = await fetch("/api/assets", {
@@ -213,6 +272,7 @@ export default function Dashboard() {
       }
       if (!response.ok) return setToast(data.error || "保存失败，请重试");
       setAssets((current) => [...current, data.asset]);
+      if (marketReturn) setMarketRates((current) => ({ ...current, [marketKey(category, code)]: marketReturn! }));
       await refreshHistory();
       setModalOpen(false);
       setToast(data.snapshot ? "资产已加入总览，今日历史已更新" : "资产已加入；汇率不完整，今日历史暂未更新");
@@ -224,33 +284,7 @@ export default function Dashboard() {
   }
 
   async function syncMarketRates() {
-    setSyncing(true);
-    const results = await Promise.all(assets.map(async (asset) => {
-      if (!asset.code || !["stock", "fund", "money"].includes(asset.category)) {
-        return { asset, updated: false, eligible: false };
-      }
-      try {
-        const response = await fetch(`/api/market?code=${encodeURIComponent(asset.code)}&category=${asset.category}&days=${lookback * 365}`);
-        const data = await response.json();
-        if (!response.ok) return { asset, updated: false, eligible: true };
-        const annualRate = Number(data.annualRate.toFixed(2));
-        const saved = await fetch("/api/assets", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: asset.id, annualRate }),
-        });
-        return saved.ok
-          ? { asset: { ...asset, annual_rate: annualRate }, updated: true, eligible: true }
-          : { asset, updated: false, eligible: true };
-      } catch { return { asset, updated: false, eligible: true }; }
-    }));
-    setAssets(results.map((result) => result.asset));
-    setSyncing(false);
-    const eligible = results.filter((result) => result.eligible).length;
-    const updated = results.filter((result) => result.updated).length;
-    setToast(eligible === 0 ? "当前没有可同步行情的股票或基金" : updated === eligible
-      ? `已更新并保存 ${updated} 项收益率`
-      : `已更新 ${updated}/${eligible} 项，其余行情暂不可用`);
+    await loadMarketRates(lookback, true);
   }
 
   async function refreshExchangeRates() {
@@ -333,6 +367,7 @@ export default function Dashboard() {
     await fetch("/api/auth/logout", { method: "POST" });
     setUser(null);
     setAssets([]);
+    setMarketRates({});
     setHistory([]);
     setAssetsLoading(false);
     setSelected(null);
@@ -381,7 +416,7 @@ export default function Dashboard() {
             <div className="change-row"><span className="change-pill">汇率折算</span><span>本月预估增长 {missingExchangeRate ? "等待汇率" : money(expectedGain / Math.max(1, horizon * 12))}</span></div>
             <div className="mini-stats">
               <div><span>可产生收益</span><strong>{missingExchangeRate ? "等待汇率" : money(total - (grouped.find((g) => g.category === "fixed")?.amount || 0))}</strong></div>
-              <div><span>组合预期年化（根据最近{lookback}年数据计算）</span><strong>{missingExchangeRate ? "等待汇率" : `${weightedRate.toFixed(2)}%`}</strong></div>
+              <div><span>组合预期年化（根据最近{lookback}年数据计算）</span><strong>{missingExchangeRate ? "等待汇率" : `${weightedRate.toFixed(2)}%`}</strong><small className="portfolio-rate-note">{limitedHistoryCount ? `其中 ${limitedHistoryCount} 项历史不足` : "\u00a0"}</small></div>
             </div>
           </article>
 
@@ -450,7 +485,11 @@ export default function Dashboard() {
               return <button className="asset-row" key={asset.id} onClick={() => setSelected(asset)}>
                 <span className="asset-icon" style={{ background: `${meta.color}18`, color: meta.color }}>{meta.short}</span>
                 <span className="asset-main"><strong>{asset.name}</strong><small>{meta.name}{asset.code ? ` · ${asset.code}` : ""}{asset.investment_strategy && asset.investment_strategy !== "none" ? ` · 定投${asset.investment_amount ? ` ${asset.investment_amount / 100}` : ""}` : ""} · {asset.note}</small></span>
-                <span className="asset-rate"><small>{asset.category === "fixed" ? "不计收益" : "预测年化"}</small><strong className={asset.annual_rate < 0 ? "negative" : ""}>{asset.category === "fixed" ? "—" : `${asset.annual_rate.toFixed(2)}%`}</strong></span>
+                <span className="asset-rate">
+                  <small>{asset.category === "fixed" ? "不计收益" : "预测年化"}</small>
+                  <strong className={asset.annual_rate < 0 ? "negative" : ""}>{asset.category === "fixed" ? "—" : `${asset.annual_rate.toFixed(2)}%`}</strong>
+                  <em className={asset.market_return?.historyLimited ? "asset-rate-note limited" : "asset-rate-note"}>{asset.market_return?.historyLimited ? <>历史不足，使用 {asset.market_return.actualDays} 天的数据计算</> : asset.market_return?.stale ? `旧数据 · ${asset.market_return.calculationDate}` : "\u00a0"}</em>
+                </span>
                 <span className="asset-amount"><strong>{originalMoney(asset.amount, asset.currency)}</strong><small>{asset.currency === "CNY" ? "人民币" : exchangeRates[asset.currency] ? `≈ ${money(cnyAmount)} · ${currencyMeta[asset.currency]}` : "等待汇率"}{!missingExchangeRate && total && cnyAmount ? ` · ${(cnyAmount / total * 100).toFixed(1)}%` : ""}</small></span>
                 <span className="chevron">›</span>
               </button>;
@@ -469,19 +508,19 @@ export default function Dashboard() {
         </section>
       </div>}
 
-      {selected && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSelected(null)}>
+      {selectedMarket && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSelected(null)}>
         <aside className="detail-panel" role="dialog" aria-modal="true">
           <button className="modal-close" onClick={() => setSelected(null)} aria-label="关闭">×</button>
-          <span className="asset-icon large" style={{ background: `${categoryMeta[selected.category].color}18`, color: categoryMeta[selected.category].color }}>{categoryMeta[selected.category].short}</span>
-          <span className="card-kicker">{categoryMeta[selected.category].name}</span><h2>{selected.name}</h2><p>{selected.note || "暂无备注"}</p>
-          <form className="asset-edit-form" key={`${selected.id}-${selected.amount}-${selected.currency}-${selected.investment_strategy}-${selected.investment_amount}`} onSubmit={updateAsset}>
-            <div className="edit-heading"><strong>修改资产</strong><span>{supportsInvestment(selected) ? "可修改市值、币种和定投设置" : "仅可修改币种和当前市值"}</span></div>
-            <div className="form-two"><label><span>计价币种</span><select name="currency" defaultValue={selected.currency}>{(Object.keys(currencyMeta) as Currency[]).map((code) => <option value={code} key={code}>{currencyMeta[code]} · {code}</option>)}</select></label><label><span>当前市值</span><input required name="amount" type="number" min="0.01" step="0.01" defaultValue={(selected.amount / 100).toFixed(2)} /></label></div>
-            {supportsInvestment(selected) && <EditableInvestmentFields asset={selected} />}
+          <span className="asset-icon large" style={{ background: `${categoryMeta[selectedMarket.category].color}18`, color: categoryMeta[selectedMarket.category].color }}>{categoryMeta[selectedMarket.category].short}</span>
+          <span className="card-kicker">{categoryMeta[selectedMarket.category].name}</span><h2>{selectedMarket.name}</h2><p>{selectedMarket.note || "暂无备注"}</p>
+          <form className="asset-edit-form" key={`${selectedMarket.id}-${selectedMarket.amount}-${selectedMarket.currency}-${selectedMarket.investment_strategy}-${selectedMarket.investment_amount}`} onSubmit={updateAsset}>
+            <div className="edit-heading"><strong>修改资产</strong><span>{supportsInvestment(selectedMarket) ? "可修改市值、币种和定投设置" : "仅可修改币种和当前市值"}</span></div>
+            <div className="form-two"><label><span>计价币种</span><select name="currency" defaultValue={selectedMarket.currency}>{(Object.keys(currencyMeta) as Currency[]).map((code) => <option value={code} key={code}>{currencyMeta[code]} · {code}</option>)}</select></label><label><span>当前市值</span><input required name="amount" type="number" min="0.01" step="0.01" defaultValue={(selectedMarket.amount / 100).toFixed(2)} /></label></div>
+            {supportsInvestment(selectedMarket) && <EditableInvestmentFields asset={selectedMarket} />}
             <button className="save-edit-button" disabled={updating}>{updating ? "正在保存…" : "保存修改"}</button>
           </form>
-          <dl>{selected.currency !== "CNY" && <div><dt>折合人民币</dt><dd>{exchangeRates[selected.currency] ? money(toCny(selected, exchangeRates)) : "等待汇率"}</dd></div>}<div><dt>预测年化</dt><dd>{selected.category === "fixed" ? "不计收益" : `${selected.annual_rate.toFixed(2)}%`}</dd></div>{selected.code && <div><dt>资产代码</dt><dd>{selected.code}</dd></div>}<div><dt>{horizon} 年后预计</dt><dd>{originalMoney(calculatePortfolio([selected], { [selected.currency]: 1 }, horizon)?.forecast ?? selected.amount, selected.currency)}</dd></div></dl>
-          <button className="danger-button" onClick={() => removeAsset(selected)}>删除这项资产</button>
+          <dl>{selectedMarket.currency !== "CNY" && <div><dt>折合人民币</dt><dd>{exchangeRates[selectedMarket.currency] ? money(toCny(selectedMarket, exchangeRates)) : "等待汇率"}</dd></div>}<div><dt>预测年化</dt><dd>{selectedMarket.category === "fixed" ? "不计收益" : `${selectedMarket.annual_rate.toFixed(2)}%`}</dd></div>{selectedMarket.code && <div><dt>资产代码</dt><dd>{selectedMarket.code}</dd></div>}{selectedMarket.market_return && <><div><dt>请求历史区间</dt><dd>{selectedMarket.market_return.requestedDays} 天</dd></div><div><dt>实际行情区间</dt><dd>{selectedMarket.market_return.startDate} 至 {selectedMarket.market_return.endDate} · {selectedMarket.market_return.actualDays} 天</dd></div><div><dt>行情缓存日期</dt><dd>{selectedMarket.market_return.calculationDate}{selectedMarket.market_return.stale ? " · 旧数据" : ""}</dd></div></>}<div><dt>{horizon} 年后预计</dt><dd>{originalMoney(calculatePortfolio([selectedMarket], { [selectedMarket.currency]: 1 }, horizon)?.forecast ?? selectedMarket.amount, selectedMarket.currency)}</dd></div></dl>
+          <button className="danger-button" onClick={() => removeAsset(selectedMarket)}>删除这项资产</button>
         </aside>
       </div>}
 

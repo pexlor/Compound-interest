@@ -32,7 +32,7 @@ test("asset reads, writes, updates, and deletes are scoped to the signed-in user
   assert.doesNotMatch(route, /seedIfEmpty|sample-assets|贵州茅台/);
 });
 
-test("market-rate sync is persisted and delete updates the visible list", async () => {
+test("market rates load in a batch and delete updates the visible list", async () => {
   const [dashboard, marketHandler, marketCalculator] = await Promise.all([
     read("app/Dashboard.tsx"),
     read("app/api/market/handler.ts"),
@@ -40,8 +40,9 @@ test("market-rate sync is persisted and delete updates the visible list", async 
   ]);
   const market = `${marketHandler}\n${marketCalculator}`;
 
-  assert.match(dashboard, /method: "PATCH"/);
-  assert.match(dashboard, /body: JSON\.stringify\(\{ id: asset\.id, annualRate \}\)/);
+  assert.match(dashboard, /loadMarketRates/);
+  assert.match(dashboard, /\/api\/market\?days=/);
+  assert.doesNotMatch(dashboard, /body: JSON\.stringify\(\{ id: asset\.id, annualRate \}\)/);
   assert.match(dashboard, /method: "DELETE"/);
   assert.match(dashboard, /current\.filter\(\(item\) => item\.id !== asset\.id\)/);
   assert.match(dashboard, /setAssets\((?:data|assetData)\.assets \?\? \[\]\)/);
@@ -104,6 +105,15 @@ test("asset history renders a trend chart, change table, and empty state", async
 test("portfolio annual rate explains the selected historical lookback", async () => {
   const dashboard = await read("app/Dashboard.tsx");
   assert.match(dashboard, /组合预期年化（根据最近\{lookback\}年数据计算）/);
+});
+
+test("market returns load in one batch and show limited-history details", async () => {
+  const dashboard = await read("app/Dashboard.tsx");
+  assert.match(dashboard, /\/api\/market\?days=\$\{selectedLookback \* 365\}/);
+  assert.match(dashboard, /历史不足，使用 \{asset\.market_return\.actualDays\} 天的数据计算/);
+  assert.match(dashboard, /实际行情区间/);
+  assert.match(dashboard, /旧数据/);
+  assert.doesNotMatch(dashboard, /Promise\.all\(assets\.map\(async \(asset\)/);
 });
 
 test("Worker config schedules market return prewarm for 04:10 Shanghai time", async () => {
