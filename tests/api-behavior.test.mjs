@@ -466,6 +466,9 @@ test("fund returns request only the latest page and the target-date window", asy
   const payload = await response.json();
   assert.equal(payload.startDate, "2025-08-03");
   assert.equal(payload.endDate, "2026-08-03");
+  assert.equal(payload.requestedDays, 365);
+  assert.equal(payload.actualDays, 365);
+  assert.equal(payload.historyLimited, false);
   assert.equal(urls.length, 2);
   assert.ok(urls[1].includes("startDate=2025-07-04"));
   assert.ok(urls[1].includes("endDate=2025-08-03"));
@@ -489,6 +492,9 @@ test("fund returns use the earliest net value when the target date predates the 
   const payload = await response.json();
   assert.equal(payload.startDate, "2024-03-19");
   assert.equal(payload.endDate, "2026-08-03");
+  assert.equal(payload.requestedDays, 3650);
+  assert.equal(payload.actualDays, 867);
+  assert.equal(payload.historyLimited, true);
   assert.equal(urls.length, 3);
   assert.ok(urls.some((url) => url.includes("startDate=")));
   assert.ok(urls.some((url) => url.includes("pageIndex=3")));
@@ -514,6 +520,9 @@ test("stock returns trim overfetched history to the requested lookback", async (
   const payload = await response.json();
   assert.equal(payload.startDate, "2025-08-03");
   assert.equal(payload.endDate, "2026-08-03");
+  assert.equal(payload.requestedDays, 365);
+  assert.equal(payload.actualDays, 365);
+  assert.equal(payload.historyLimited, false);
   assert.equal(urls.length, 5);
   assert.ok(urls[2].includes("day,2025-07-04,2025-08-03,30,qfq"));
 });
@@ -590,8 +599,30 @@ test("stock returns use the earliest price when the target date predates listing
   const payload = await response.json();
   assert.equal(payload.startDate, "2024-03-19");
   assert.equal(payload.endDate, "2026-08-03");
+  assert.equal(payload.requestedDays, 3650);
+  assert.equal(payload.actualDays, 867);
+  assert.equal(payload.historyLimited, true);
   assert.equal(urls.length, 6);
   assert.ok(urls[3].includes(",2000,qfq"));
+});
+
+test("money fund returns never report n-year history as limited", async () => {
+  const { createMarketHandler } = await load("app/api/market/handler.ts");
+  const points = Array.from({ length: 7 }, (_, index) => ({
+    FSRQ: `2026-08-0${7 - index}`,
+    DWJZ: "0.5",
+    LJJZ: "1",
+  }));
+  const handler = createMarketHandler({
+    authenticate: async () => ({ id: 1 }),
+    fetch: async () => Response.json({ Data: { LSJZList: points, SYType: "每万份收益" } }),
+  });
+  const response = await handler(new Request("http://local/api/market?code=000001&category=money&days=3650"));
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.requestedDays, 3650);
+  assert.equal(payload.actualDays, 6);
+  assert.equal(payload.historyLimited, false);
 });
 
 test("market API aborts slow upstream requests", async () => {

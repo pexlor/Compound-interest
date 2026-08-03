@@ -33,10 +33,12 @@ test("asset reads, writes, updates, and deletes are scoped to the signed-in user
 });
 
 test("market-rate sync is persisted and delete updates the visible list", async () => {
-  const [dashboard, market] = await Promise.all([
+  const [dashboard, marketHandler, marketCalculator] = await Promise.all([
     read("app/Dashboard.tsx"),
     read("app/api/market/handler.ts"),
+    read("app/api/market/calculator.ts"),
   ]);
+  const market = `${marketHandler}\n${marketCalculator}`;
 
   assert.match(dashboard, /method: "PATCH"/);
   assert.match(dashboard, /body: JSON\.stringify\(\{ id: asset\.id, annualRate \}\)/);
