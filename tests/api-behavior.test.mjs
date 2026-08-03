@@ -547,6 +547,38 @@ test("market API authenticates, targets the requested lookback, and caches", asy
   assert.equal((await unauthorized(request)).status, 401);
 });
 
+test("batch market API reads the signed-in user's cached returns and validates lookbacks", async () => {
+  const { createMarketHandler } = await load("app/api/market/handler.ts");
+  const calls = [];
+  const service = {
+    async get(category, code, lookbackDays) {
+      calls.push({ mode: "single", category, code, lookbackDays });
+      return sampleMarketReturn({ category, code, lookbackDays });
+    },
+    async getForUser(userId, lookbackDays) {
+      calls.push({ mode: "batch", userId, lookbackDays });
+      return {
+        results: [sampleMarketReturn({ category: "fund", code: "021000", lookbackDays }), sampleMarketReturn({ code: "QQQ", lookbackDays })],
+        errors: [],
+      };
+    },
+  };
+  const handler = createMarketHandler({
+    authenticate: async () => ({ id: 7 }),
+    getService: async () => service,
+  });
+
+  const batch = await handler(new Request("http://local/api/market?days=1095"));
+  assert.equal(batch.status, 200);
+  assert.deepEqual((await batch.json()).results.map((item) => item.code), ["021000", "QQQ"]);
+  assert.deepEqual(calls[0], { mode: "batch", userId: 7, lookbackDays: 1095 });
+
+  const single = await handler(new Request("http://local/api/market?code=qqq&category=stock&days=365"));
+  assert.equal(single.status, 200);
+  assert.deepEqual(calls[1], { mode: "single", category: "stock", code: "QQQ", lookbackDays: 365 });
+  assert.equal((await handler(new Request("http://local/api/market?days=30"))).status, 400);
+});
+
 test("fund returns request only the latest page and the target-date window", async () => {
   const { createMarketHandler } = await load("app/api/market/handler.ts");
   const urls = [];
