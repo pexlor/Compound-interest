@@ -187,6 +187,19 @@ function createExchangeRateHistoryDb() {
       if (sql.includes("FROM exchange_rate_history")) return { results: [...rows.values()] };
       throw new Error(`Unexpected exchange rate history all query: ${sql}`);
     },
+    async run() {
+      if (sql.startsWith("DELETE FROM exchange_rate_history")) {
+        let changes = 0;
+        for (const [key, row] of rows) {
+          if (row.rate_date < values[0]) {
+            rows.delete(key);
+            changes += 1;
+          }
+        }
+        return { meta: { changes } };
+      }
+      throw new Error(`Unexpected exchange rate history run query: ${sql}`);
+    },
   });
   return {
     rows,
@@ -272,6 +285,54 @@ function sampleFrankfurterRows(date = "2026-07-31") {
   }));
 }
 
+function createMemoryRatesBucket(initialText = null, options = {}) {
+  let text = initialText;
+  let etag = initialText === null ? null : "etag-1";
+  let version = initialText === null ? 0 : 1;
+  let conflictOnce = options.conflictOnce ?? false;
+  const gets = [];
+  const puts = [];
+  return {
+    gets,
+    puts,
+    currentText: () => text,
+    async get(key) {
+      gets.push(key);
+      if (text === null) return null;
+      return { etag, text: async () => text };
+    },
+    async put(key, value, putOptions = {}) {
+      puts.push({ key, value, options: putOptions });
+      if (conflictOnce) {
+        conflictOnce = false;
+        return null;
+      }
+      const condition = putOptions.onlyIf ?? {};
+      if (condition.etagMatches && condition.etagMatches !== etag) return null;
+      if (condition.etagDoesNotMatch === "*" && text !== null) return null;
+      version += 1;
+      text = value;
+      etag = `etag-${version}`;
+      return { key, etag };
+    },
+  };
+}
+
+function createHistoryFetcher(resolver) {
+  const urls = [];
+  const fetcher = async (input) => {
+    const url = new URL(String(input));
+    urls.push(url);
+    const result = await resolver(url, urls.length);
+    if (result instanceof Response) return result;
+    return Response.json(result);
+  };
+  fetcher.urls = urls;
+  return fetcher;
+}
+
+const silentHistoryLogger = { info() {}, warn() {}, error() {} };
+
 test("exchange history file validates, converts all currencies, and keeps a rolling ten-year window", async () => {
   const {
     createEmptyHistoryFile,
@@ -317,6 +378,119 @@ test("exchange history file windows are continuous, non-overlapping, and at most
       assert.equal(Date.parse(window.from) - Date.parse(previous.to), 86400000);
     }
   }
+});
+
+test("exchange history sync backfills ten years, writes once, imports D1, and logs completion", async () => {
+  const { createExchangeRateHistorySync } = await load("app/api/exchange-rates/history-sync.ts");
+  const db = createExchangeRateHistoryDb();
+  const bucket = createMemoryRatesBucket();
+  const fetcher = createHistoryFetcher((url) => url.searchParams.get("to") === "2026-08-03"
+    ? [...sampleFrankfurterRows("2026-07-31"), ...sampleFrankfurterRows("2026-08-01")]
+    : []);
+  const logs = [];
+  const logger = {
+    info(message, details) { logs.push({ level: "info", message, ...details }); },
+    warn(message, details) { logs.push({ level: "warn", message, ...details }); },
+    error(message, details) { logs.push({ level: "error", message, ...details }); },
+  };
+
+  const summary = await createExchangeRateHistorySync({
+    db,
+    bucket,
+    fetch: fetcher,
+    now: () => new Date("2026-08-03T12:00:00.000Z"),
+    logger,
+  }).sync();
+
+  assert.equal(fetcher.urls.length, 10);
+  assert.ok(fetcher.urls.every((url) => url.searchParams.get("base") === "CNY"));
+  assert.equal(bucket.puts.length, 1);
+  assert.equal(summary.currencies, 9);
+  assert.equal(summary.inserted, 18);
+  assert.equal(summary.checkedThrough, "2026-08-03");
+  assert.ok(logs.some((entry) => entry.message === "[exchange-rate-history]" && entry.event === "sync_complete"));
+});
+
+test("exchange history sync advances an existing file after an empty incremental response", async () => {
+  const { createExchangeRateHistorySync } = await load("app/api/exchange-rates/history-sync.ts");
+  const existing = {
+    version: 1,
+    base: "CNY",
+    checkedThrough: "2026-08-01",
+    updatedAt: "2026-08-01T16:00:00.000Z",
+    dates: {},
+  };
+  const bucket = createMemoryRatesBucket(JSON.stringify(existing));
+  const fetcher = createHistoryFetcher(() => []);
+
+  await createExchangeRateHistorySync({
+    db: createExchangeRateHistoryDb(),
+    bucket,
+    fetch: fetcher,
+    now: () => new Date("2026-08-02T12:00:00.000Z"),
+    logger: silentHistoryLogger,
+  }).sync();
+
+  assert.equal(fetcher.urls.length, 1);
+  assert.equal(fetcher.urls[0].searchParams.get("from"), "2026-08-02");
+  assert.equal(JSON.parse(bucket.currentText()).checkedThrough, "2026-08-02");
+});
+
+test("exchange history sync never overwrites R2 after a failed window or damaged file", async () => {
+  const { createExchangeRateHistorySync } = await load("app/api/exchange-rates/history-sync.ts");
+  const failedBucket = createMemoryRatesBucket();
+  const failedFetcher = createHistoryFetcher((url, call) => call === 2
+    ? new Response("upstream failed", { status: 503 })
+    : []);
+  await assert.rejects(
+    createExchangeRateHistorySync({
+      db: createExchangeRateHistoryDb(),
+      bucket: failedBucket,
+      fetch: failedFetcher,
+      now: () => new Date("2026-08-03T12:00:00.000Z"),
+      logger: silentHistoryLogger,
+    }).sync(),
+    /汇率历史请求失败/,
+  );
+  assert.equal(failedBucket.puts.length, 0);
+
+  const damagedBucket = createMemoryRatesBucket("{damaged");
+  await assert.rejects(
+    createExchangeRateHistorySync({
+      db: createExchangeRateHistoryDb(),
+      bucket: damagedBucket,
+      fetch: createHistoryFetcher(() => []),
+      now: () => new Date("2026-08-03T12:00:00.000Z"),
+      logger: silentHistoryLogger,
+    }).sync(),
+    /JSON 解析失败/,
+  );
+  assert.equal(damagedBucket.puts.length, 0);
+});
+
+test("exchange history sync rereads and succeeds after one R2 ETag conflict", async () => {
+  const { createExchangeRateHistorySync } = await load("app/api/exchange-rates/history-sync.ts");
+  const existing = {
+    version: 1,
+    base: "CNY",
+    checkedThrough: "2026-08-01",
+    updatedAt: "2026-08-01T16:00:00.000Z",
+    dates: {},
+  };
+  const bucket = createMemoryRatesBucket(JSON.stringify(existing), { conflictOnce: true });
+
+  const summary = await createExchangeRateHistorySync({
+    db: createExchangeRateHistoryDb(),
+    bucket,
+    fetch: createHistoryFetcher(() => sampleFrankfurterRows("2026-08-02")),
+    now: () => new Date("2026-08-02T12:00:00.000Z"),
+    logger: silentHistoryLogger,
+  }).sync();
+
+  assert.equal(bucket.gets.length, 2);
+  assert.equal(bucket.puts.length, 2);
+  assert.equal(summary.inserted, 9);
+  assert.ok(JSON.parse(bucket.currentText()).dates["2026-08-02"]);
 });
 
 test("latest exchange rates require all supported currencies from one date", async () => {
