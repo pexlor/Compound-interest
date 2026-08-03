@@ -33,6 +33,11 @@ function validAmount(value: unknown) {
   return Number.isSafeInteger(cents) ? cents : null;
 }
 
+function validQuantity(value: unknown) {
+  const quantity = Number(value);
+  return Number.isFinite(quantity) && quantity > 0 && quantity <= Number.MAX_SAFE_INTEGER ? quantity : null;
+}
+
 export function createAssetsHandlers(dependencies: Dependencies) {
   async function snapshot(db: D1Database, userId: number) {
     try {
@@ -48,7 +53,7 @@ export function createAssetsHandlers(dependencies: Dependencies) {
       if (!user) return unauthorized();
       const db = await dependencies.getAssetsDb();
       const result = await db.prepare(
-        "SELECT id, user_id, name, category, code, amount, currency, annual_rate, investment_strategy, investment_amount, note, created_at FROM assets WHERE user_id = ? ORDER BY id"
+        "SELECT id, user_id, name, category, code, amount, quantity, currency, annual_rate, investment_strategy, investment_amount, note, created_at FROM assets WHERE user_id = ? ORDER BY id"
       ).bind(user.id).all<AssetRow>();
       return Response.json({ assets: result.results });
     } catch (error) {
@@ -61,7 +66,7 @@ export function createAssetsHandlers(dependencies: Dependencies) {
       const user = await dependencies.getAuthenticatedUser(request);
       if (!user) return unauthorized();
       const body = (await request.json()) as Partial<{
-        name: string; category: string; code: string; amount: number; currency: string; annualRate: number; note: string; investmentStrategy: string; investmentAmount: number;
+        name: string; category: string; code: string; amount: number; quantity: number; currency: string; annualRate: number; note: string; investmentStrategy: string; investmentAmount: number;
       }>;
       const name = body.name?.trim() ?? "";
       const category = body.category?.trim() ?? "";
@@ -69,18 +74,23 @@ export function createAssetsHandlers(dependencies: Dependencies) {
       const code = body.code?.trim().toUpperCase() || null;
       const note = body.note?.trim() || "";
       const amount = validAmount(body.amount);
+      const quantityAsset = category === "stock" || category === "fund";
+      const quantity = quantityAsset ? validQuantity(body.quantity) : null;
       const annualRate = validRate(body.annualRate ?? 0);
       const investmentStrategy = body.investmentStrategy?.trim() || "none";
       const investmentAmount = investmentStrategy === "none" ? null : validAmount(body.investmentAmount);
 
       if (!name || name.length > 120 || amount === null) {
-        return Response.json({ error: "请填写有效的资产名称和金额" }, { status: 400 });
+        return Response.json({ error: "请填写有效的资产名称和金额或持有数量" }, { status: 400 });
       }
       if (!supportedCategories.has(category)) {
         return Response.json({ error: "暂不支持这个资产类别" }, { status: 400 });
       }
       if (!supportedCurrencies.has(currency)) {
         return Response.json({ error: "暂不支持这个计价币种" }, { status: 400 });
+      }
+      if (quantityAsset && (!code || quantity === null)) {
+        return Response.json({ error: `请输入有效的${category === "stock" ? "股票代码和股数" : "基金代码和份数"}` }, { status: 400 });
       }
       if (annualRate === null) {
         return Response.json({ error: "无效的收益率数据" }, { status: 400 });
@@ -94,8 +104,8 @@ export function createAssetsHandlers(dependencies: Dependencies) {
 
       const db = await dependencies.getAssetsDb();
       const row = await db.prepare(
-        "INSERT INTO assets (user_id, name, category, code, amount, currency, annual_rate, investment_strategy, investment_amount, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, user_id, name, category, code, amount, currency, annual_rate, investment_strategy, investment_amount, note, created_at"
-      ).bind(user.id, name, category, code, amount, currency, annualRate, investmentStrategy, investmentAmount, note).first<AssetRow>();
+        "INSERT INTO assets (user_id, name, category, code, amount, quantity, currency, annual_rate, investment_strategy, investment_amount, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, user_id, name, category, code, amount, quantity, currency, annual_rate, investment_strategy, investment_amount, note, created_at"
+      ).bind(user.id, name, category, code, amount, quantity, currency, annualRate, investmentStrategy, investmentAmount, note).first<AssetRow>();
       return Response.json({ asset: row, snapshot: await snapshot(db, user.id) }, { status: 201 });
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : "保存资产失败" }, { status: 500 });
@@ -121,7 +131,7 @@ export function createAssetsHandlers(dependencies: Dependencies) {
     try {
       const user = await dependencies.getAuthenticatedUser(request);
       if (!user) return unauthorized();
-      const body = (await request.json()) as { id?: number; annualRate?: number; amount?: number; currency?: string; investmentStrategy?: string; investmentAmount?: number };
+      const body = (await request.json()) as { id?: number; annualRate?: number; amount?: number; quantity?: number; currency?: string; investmentStrategy?: string; investmentAmount?: number };
       const id = Number(body.id);
       if (!Number.isInteger(id) || id <= 0) return Response.json({ error: "无效资产" }, { status: 400 });
       const db = await dependencies.getAssetsDb();
@@ -136,22 +146,24 @@ export function createAssetsHandlers(dependencies: Dependencies) {
         return Response.json({ ok: true, investmentStrategy: strategy, investmentAmount, snapshot: await snapshot(db, user.id) });
       }
 
-      if (body.amount !== undefined || body.currency !== undefined || body.investmentStrategy !== undefined || body.investmentAmount !== undefined) {
+      if (body.amount !== undefined || body.quantity !== undefined || body.currency !== undefined || body.investmentStrategy !== undefined || body.investmentAmount !== undefined) {
         const amount = validAmount(body.amount);
+        const quantity = body.quantity === undefined ? undefined : validQuantity(body.quantity);
         const currency = body.currency?.trim().toUpperCase() || "";
         if (amount === null) return Response.json({ error: "请填写有效的当前市值" }, { status: 400 });
+        if (body.quantity !== undefined && quantity === null) return Response.json({ error: "请填写有效的持有数量" }, { status: 400 });
         if (!supportedCurrencies.has(currency)) return Response.json({ error: "暂不支持这个计价币种" }, { status: 400 });
         const changesInvestment = body.investmentStrategy !== undefined || body.investmentAmount !== undefined;
         const strategy = body.investmentStrategy?.trim() || "none";
         const investmentAmount = strategy === "none" ? null : validAmount(body.investmentAmount);
         if (changesInvestment && (!supportedInvestmentStrategies.has(strategy) || strategy !== "none" && investmentAmount === null)) return Response.json({ error: "基金定投策略或金额无效" }, { status: 400 });
         const result = changesInvestment
-          ? await db.prepare(`UPDATE assets SET amount = ?, currency = ?, investment_strategy = ?, investment_amount = ? WHERE id = ? AND user_id = ?${strategy === "none" ? "" : " AND (category = 'fund' OR (category = 'stock' AND code IS NOT NULL AND code NOT GLOB '[0-9]*'))"}`)
-            .bind(amount, currency, strategy, investmentAmount, id, user.id).run()
-          : await db.prepare("UPDATE assets SET amount = ?, currency = ? WHERE id = ? AND user_id = ?")
-            .bind(amount, currency, id, user.id).run();
+          ? await db.prepare(`UPDATE assets SET amount = ?, quantity = COALESCE(?, quantity), currency = ?, investment_strategy = ?, investment_amount = ? WHERE id = ? AND user_id = ?${strategy === "none" ? "" : " AND (category = 'fund' OR (category = 'stock' AND code IS NOT NULL AND code NOT GLOB '[0-9]*'))"}`)
+            .bind(amount, quantity ?? null, currency, strategy, investmentAmount, id, user.id).run()
+          : await db.prepare("UPDATE assets SET amount = ?, quantity = COALESCE(?, quantity), currency = ? WHERE id = ? AND user_id = ?")
+            .bind(amount, quantity ?? null, currency, id, user.id).run();
         if (!result.meta.changes) return Response.json({ error: "资产不存在" }, { status: 404 });
-        return Response.json({ ok: true, amount, currency, investmentStrategy: changesInvestment ? strategy : undefined, investmentAmount: changesInvestment ? investmentAmount : undefined, snapshot: await snapshot(db, user.id) });
+        return Response.json({ ok: true, amount, quantity, currency, investmentStrategy: changesInvestment ? strategy : undefined, investmentAmount: changesInvestment ? investmentAmount : undefined, snapshot: await snapshot(db, user.id) });
       }
 
       const annualRate = validRate(body.annualRate);

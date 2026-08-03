@@ -7,6 +7,7 @@ export type AssetRow = {
   category: string;
   code: string | null;
   amount: number;
+  quantity: number | null;
   currency: string;
   annual_rate: number;
   investment_strategy: string;
@@ -38,6 +39,7 @@ export async function initializeAssetsDb(db: D1Database) {
         category TEXT NOT NULL,
         code TEXT,
         amount INTEGER NOT NULL,
+        quantity REAL,
         currency TEXT NOT NULL DEFAULT 'CNY',
         annual_rate REAL NOT NULL DEFAULT 0,
         investment_strategy TEXT NOT NULL DEFAULT 'none',
@@ -116,6 +118,9 @@ export async function initializeAssetsDb(db: D1Database) {
   }
   if (!columns.results.some((column) => column.name === "currency")) {
     await db.prepare("ALTER TABLE assets ADD COLUMN currency TEXT NOT NULL DEFAULT 'CNY'").run();
+  }
+  if (!columns.results.some((column) => column.name === "quantity")) {
+    await db.prepare("ALTER TABLE assets ADD COLUMN quantity REAL").run();
   }
   if (!columns.results.some((column) => column.name === "investment_strategy")) {
     await db.prepare("ALTER TABLE assets ADD COLUMN investment_strategy TEXT NOT NULL DEFAULT 'none'").run();

@@ -17,7 +17,7 @@ async function getService() {
         fetcher: (url) => fetcher(url, { signal: AbortSignal.timeout(4000) }),
       }, marketDate),
     });
-    return createMarketReturnService({ db, calculate: calculator.calculate });
+    return createMarketReturnService({ db, calculate: calculator.calculate, quote: calculator.quote });
   });
   return servicePromise;
 }

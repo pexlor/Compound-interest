@@ -27,7 +27,7 @@ test("asset reads, writes, updates, and deletes are scoped to the signed-in user
   assert.match(route, /INSERT INTO assets \(user_id,/);
   assert.match(route, /DELETE FROM assets WHERE id = \? AND user_id = \?/);
   assert.match(route, /UPDATE assets SET annual_rate = \? WHERE id = \? AND user_id = \?/);
-  assert.match(route, /UPDATE assets SET amount = \?, currency = \? WHERE id = \? AND user_id = \?/);
+  assert.match(route, /UPDATE assets SET amount = \?, quantity = COALESCE\(\?, quantity\), currency = \? WHERE id = \? AND user_id = \?/);
   assert.match(route, /if \(!result\.meta\.changes\).*404/);
   assert.doesNotMatch(route, /seedIfEmpty|sample-assets|贵州茅台/);
 });
@@ -84,16 +84,37 @@ test("multi-currency assets are persisted and totals are converted with latest r
   assert.match(dashboard, /总资产 · 折合人民币/);
   assert.match(dashboard, /外币按当前汇率不变测算/);
   assert.match(dashboard, /仅可修改币种和当前市值/);
-  assert.match(dashboard, /资产金额与币种已保存/);
+  assert.match(dashboard, /持有数量/);
   assert.match(dashboard, /记录资产/);
   assert.match(assetsRoute, /supportedCurrencies/);
-  assert.match(assetsRoute, /amount, currency, annual_rate/);
+  assert.match(assetsRoute, /amount, quantity, currency, annual_rate/);
   assert.match(ratesRoute, /api\.frankfurter\.dev\/v2\/rates/);
   assert.match(ratesRoute, /rates\[currency\] = 1 \/ row\.rate/);
   assert.match(marketRoute, /historicalRate/);
   assert.match(marketPrewarm, /historicalRate/);
   assert.match(schema, /currency: text\("currency"\)\.notNull\(\)\.default\("CNY"\)/);
   assert.match(migration, /ADD `currency` text DEFAULT 'CNY' NOT NULL/);
+});
+
+test("stocks and funds use decimal quantities with live market prices", async () => {
+  const [dashboard, assetsRoute, calculator, schema, migration] = await Promise.all([
+    read("app/Dashboard.tsx"),
+    read("app/api/assets/handlers.ts"),
+    read("app/api/market/calculator.ts"),
+    read("db/schema.ts"),
+    read("drizzle/0007_cute_mister_fear.sql"),
+  ]);
+  assert.match(dashboard, /name="quantity"/);
+  assert.match(dashboard, /step="any"/);
+  assert.match(dashboard, /quantity! \* marketReturn!\.currentPrice!/);
+  assert.match(dashboard, /股票代码/);
+  assert.match(assetsRoute, /validQuantity/);
+  assert.match(assetsRoute, /股票代码和股数/);
+  assert.match(calculator, /currentPrice/);
+  assert.match(calculator, /qt\.gtimg\.cn/);
+  assert.match(calculator, /最新单位净值/);
+  assert.match(schema, /quantity: real\("quantity"\)/);
+  assert.match(migration, /ADD `quantity` real/);
 });
 
 test("asset history renders a trend chart, change table, and empty state", async () => {

@@ -5,7 +5,7 @@ import {
   shanghaiDate,
 } from "../../../db/market-returns.ts";
 import type { MarketReturnRecord } from "../../../db/market-returns.ts";
-import type { MarketCalculation } from "./calculator.ts";
+import type { MarketCalculation, MarketQuote } from "./calculator.ts";
 
 export const LOOKBACK_DAYS = [365, 1095, 1825, 3650] as const;
 
@@ -21,6 +21,7 @@ type MarketKey = { category: string; code: string };
 type Dependencies = {
   db: D1Database;
   calculate(category: string, code: string, lookbackDays: number): Promise<MarketCalculation>;
+  quote?(category: string, code: string): Promise<MarketQuote>;
   now?: () => Date;
   concurrency?: number;
   logger?: Logger;
@@ -121,7 +122,9 @@ export function createMarketReturnService(dependencies: Dependencies) {
       inFlight.set(key, pending);
     }
     try {
-      return await pending;
+      const marketReturn = await pending;
+      if (!dependencies.quote) return marketReturn;
+      return { ...marketReturn, ...await dependencies.quote(normalizedCategory, code) };
     } finally {
       inFlight.delete(key);
     }
@@ -153,7 +156,7 @@ export function createMarketReturnService(dependencies: Dependencies) {
     log("info", "prewarm_start", { assets: keys.length, items: work.length, calculationDate: shanghaiDate(now()) });
     const settled = await mapLimited(work, concurrency, async (item) => {
       try {
-        await get(item.category, item.code, item.lookbackDays);
+        await resolve(item.category, item.code, item.lookbackDays);
         return null;
       } catch (error) {
         return { ...item, error: errorMessage(error) };

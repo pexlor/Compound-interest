@@ -18,6 +18,12 @@ export type MarketCalculation = {
   source: string;
 };
 
+export type MarketQuote = {
+  currentPrice: number;
+  priceCurrency: "CNY" | "USD";
+  priceDate: string;
+};
+
 type CalculatorDependencies = {
   fetch: typeof fetch;
   historicalRate?: (marketDate: string) => Promise<{ date: string; rate: number }>;
@@ -177,6 +183,22 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
     };
   }
 
+  async function stockQuote(code: string): Promise<MarketQuote> {
+    const isUsSecurity = isUsSecurityCode(code);
+    const symbol = await resolveStockSymbol(code);
+    const response = await upstreamFetch(`https://qt.gtimg.cn/q=${encodeURIComponent(symbol)}`);
+    if (!response.ok) throw new Error("行情服务暂时不可用");
+    const payload = await response.text();
+    const fields = payload.match(/="([^"]*)"/)?.[1]?.split("~") ?? [];
+    const currentPrice = Number(fields[3]);
+    if (!Number.isFinite(currentPrice) || currentPrice <= 0) throw new Error("没有找到这个股票代码的实时价格");
+    const rawDate = fields[30] || "";
+    const priceDate = /^\d{14}$/.test(rawDate)
+      ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)} ${rawDate.slice(8, 10)}:${rawDate.slice(10, 12)}`
+      : rawDate || new Date().toISOString();
+    return { currentPrice, priceCurrency: isUsSecurity ? "USD" : "CNY", priceDate };
+  }
+
   async function fundReturn(code: string, days: number, isMoney: boolean): Promise<MarketCalculation> {
     const requestedPageSize = 100;
     const fetchPage = async (pageIndex: number, startDate?: string, endDate?: string) => {
@@ -230,11 +252,26 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
     };
   }
 
+  async function fundQuote(code: string): Promise<MarketQuote> {
+    const params = new URLSearchParams({ fundCode: code, pageIndex: "1", pageSize: "1" });
+    const response = await upstreamFetch(`https://api.fund.eastmoney.com/f10/lsjz?${params}`);
+    if (!response.ok) throw new Error("基金数据服务暂时不可用");
+    const point = ((await response.json()) as FundPage).Data?.LSJZList?.[0];
+    const currentPrice = Number(point?.DWJZ);
+    if (!point || !Number.isFinite(currentPrice) || currentPrice <= 0) throw new Error("没有找到这个基金代码的最新单位净值");
+    return { currentPrice, priceCurrency: "CNY", priceDate: point.FSRQ };
+  }
+
   return {
     calculate(category: string, code: string, days: number) {
       return category === "stock" || (category === "fund" && (/^[15]/.test(code) || isUsSecurityCode(code)))
         ? stockReturn(code, days)
         : fundReturn(code, days, category === "money");
+    },
+    quote(category: string, code: string) {
+      return category === "stock" || (category === "fund" && (/^[15]/.test(code) || isUsSecurityCode(code)))
+        ? stockQuote(code)
+        : fundQuote(code);
     },
   };
 }

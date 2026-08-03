@@ -25,6 +25,7 @@ export const assets = sqliteTable("assets", {
   category: text("category").notNull(),
   code: text("code"),
   amount: integer("amount").notNull(),
+  quantity: real("quantity"),
   currency: text("currency").notNull().default("CNY"),
   annualRate: real("annual_rate").notNull().default(0),
   investmentStrategy: text("investment_strategy").notNull().default("none"),

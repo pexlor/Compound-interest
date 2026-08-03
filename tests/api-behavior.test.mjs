@@ -25,9 +25,9 @@ function createAssetDb() {
             },
             async first() {
               if (!sql.startsWith("INSERT INTO assets")) throw new Error(`Unexpected first query: ${sql}`);
-              const [userId, name, category, code, amount, currency, annualRate, investmentStrategy, investmentAmount, note] = values;
+              const [userId, name, category, code, amount, quantity, currency, annualRate, investmentStrategy, investmentAmount, note] = values;
               const row = {
-                id: nextId++, user_id: userId, name, category, code, amount, currency,
+                id: nextId++, user_id: userId, name, category, code, amount, quantity, currency,
                 annual_rate: annualRate, investment_strategy: investmentStrategy ?? "none", investment_amount: investmentAmount ?? null, note: note ?? "", created_at: "2026-08-03 00:00:00",
               };
               rows.push(row);
@@ -50,10 +50,11 @@ function createAssetDb() {
                 return { meta: { changes: 1 } };
               }
               if (sql.startsWith("UPDATE assets SET amount")) {
-                const [amount, currency, id, userId] = values;
+                const [amount, quantity, currency, id, userId] = values;
                 const row = rows.find((item) => item.id === id && item.user_id === userId);
                 if (!row) return { meta: { changes: 0 } };
                 row.amount = amount;
+                row.quantity = quantity ?? row.quantity;
                 row.currency = currency;
                 return { meta: { changes: 1 } };
               }
@@ -789,7 +790,7 @@ test("fund investment strategy can be changed after creation", async () => {
   const handlers = createAssetsHandlers({ getAuthenticatedUser: async () => ({ id: 1 }), getAssetsDb: async () => db });
   const created = await handlers.POST(new Request("http://local/api/assets", {
     method: "POST",
-    body: JSON.stringify({ name: "指数基金", category: "fund", code: "510300", amount: 1000, currency: "CNY", annualRate: 5 }),
+    body: JSON.stringify({ name: "指数基金", category: "fund", code: "510300", amount: 1000, quantity: 250.5, currency: "CNY", annualRate: 5 }),
   }));
   const asset = (await created.json()).asset;
   const changed = await handlers.PATCH(new Request("http://local/api/assets", {
@@ -1252,6 +1253,24 @@ test("market API aborts slow upstream requests", async () => {
   const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch, timeoutMs: 5 });
   const response = await handler(new Request("http://local/api/market?code=600000&category=stock&days=365"));
   assert.equal(response.status, 504);
+});
+
+test("market calculator reads live stock prices and latest fund unit values", async () => {
+  const { createMarketCalculator } = await load("app/api/market/calculator.ts");
+  const calculator = createMarketCalculator({
+    fetch: async (url) => {
+      const href = String(url);
+      if (href.includes("qt.gtimg.cn")) return new Response('v_sh600519="1~stock~600519~1358.98~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~20260803154141"');
+      if (href.includes("fundCode=000001")) return Response.json({ Data: { LSJZList: [{ FSRQ: "2026-08-01", DWJZ: "1.2345", LJJZ: "4.2" }] } });
+      throw new Error(`Unexpected quote URL: ${href}`);
+    },
+  });
+  assert.deepEqual(await calculator.quote("stock", "600519"), {
+    currentPrice: 1358.98, priceCurrency: "CNY", priceDate: "2026-08-03 15:41",
+  });
+  assert.deepEqual(await calculator.quote("fund", "000001"), {
+    currentPrice: 1.2345, priceCurrency: "CNY", priceDate: "2026-08-01",
+  });
 });
 
 test("QQQ ten-year history uses a target-date window", async () => {
