@@ -117,12 +117,20 @@ function createSnapshotDb() {
 
 function createMarketReturnDb() {
   const rows = new Map();
-  return {
+  const db = {
     rows,
+    assets: [],
     prepare(sql) {
       return {
         bind(...values) {
           return {
+            async all() {
+              if (!sql.includes("FROM assets")) throw new Error(`Unexpected market return all query: ${sql}`);
+              const userId = sql.includes("user_id = ?") ? values[0] : null;
+              return {
+                results: db.assets.filter((row) => userId === null || row.user_id === userId),
+              };
+            },
             async first() {
               if (sql.startsWith("INSERT INTO market_returns")) {
                 const [category, code, lookbackDays, calculationDate, annualRate, periodReturn, requestedDays, actualDays, historyLimited, startDate, endDate, source, calculatedAt] = values;
@@ -152,6 +160,7 @@ function createMarketReturnDb() {
       };
     },
   };
+  return db;
 }
 
 function sampleMarketReturn(overrides = {}) {
@@ -173,6 +182,95 @@ test("market return cache uses the Shanghai date and upserts one daily row", asy
   assert.equal([...db.rows.values()][0].annual_rate, 9);
   assert.equal((await findMarketReturn(db, "stock", "QQQ", 1095, "2026-08-03")).annualRate, 9);
   assert.equal((await findLatestMarketReturn(db, "stock", "QQQ", 1095)).calculationDate, "2026-08-03");
+});
+
+function sampleCalculation(overrides = {}) {
+  return {
+    annualRate: 8, periodReturn: 25.97, requestedDays: 1095, actualDays: 1096,
+    historyLimited: false, startDate: "2023-08-03", endDate: "2026-08-03",
+    source: "test", ...overrides,
+  };
+}
+
+function captureLogger() {
+  const events = [];
+  return {
+    events,
+    logger: {
+      info: (...args) => events.push(["info", ...args]),
+      warn: (...args) => events.push(["warn", ...args]),
+      error: (...args) => events.push(["error", ...args]),
+    },
+  };
+}
+
+test("market return read-through logs cache hits and fills daily misses", async () => {
+  const { saveMarketReturn } = await load("db/market-returns.ts");
+  const { createMarketReturnService } = await load("app/api/market/market-return-service.ts");
+  const db = createMarketReturnDb();
+  await saveMarketReturn(db, sampleMarketReturn());
+  let calculatorCalls = 0;
+  const { events, logger } = captureLogger();
+  const service = createMarketReturnService({
+    db, now: () => new Date("2026-08-03T12:00:00+08:00"), logger,
+    calculate: async () => { calculatorCalls += 1; return sampleCalculation(); },
+  });
+
+  const hit = await service.get("stock", "QQQ", 1095);
+  assert.equal(hit.annualRate, 8);
+  assert.equal(calculatorCalls, 0);
+  assert.ok(events.some((event) => event[2]?.event === "cache_hit"));
+
+  const miss = await service.get("fund", "021000", 1095);
+  assert.equal(miss.code, "021000");
+  assert.equal(calculatorCalls, 1);
+  assert.equal(db.rows.size, 2);
+  assert.ok(events.some((event) => event[2]?.event === "cache_miss"));
+  assert.ok(events.some((event) => event[2]?.event === "calculate_success"));
+});
+
+test("market return read-through falls back to stale cache and logs the reason", async () => {
+  const { saveMarketReturn } = await load("db/market-returns.ts");
+  const { createMarketReturnService } = await load("app/api/market/market-return-service.ts");
+  const db = createMarketReturnDb();
+  await saveMarketReturn(db, sampleMarketReturn({ calculationDate: "2026-08-02" }));
+  const { events, logger } = captureLogger();
+  const service = createMarketReturnService({
+    db, now: () => new Date("2026-08-03T12:00:00+08:00"), logger,
+    calculate: async () => { throw new Error("upstream down"); },
+  });
+  const result = await service.get("stock", "QQQ", 1095);
+  assert.equal(result.stale, true);
+  assert.equal(result.calculationDate, "2026-08-02");
+  assert.ok(events.some((event) => event[2]?.event === "stale_fallback" && event[2]?.error === "upstream down"));
+});
+
+test("market return prewarm deduplicates assets, covers four lookbacks, and isolates failures", async () => {
+  const { createMarketReturnService, LOOKBACK_DAYS } = await load("app/api/market/market-return-service.ts");
+  const db = createMarketReturnDb();
+  db.assets.push(
+    { user_id: 1, category: "stock", code: "qqq" },
+    { user_id: 2, category: "stock", code: "QQQ" },
+    { user_id: 1, category: "fund", code: "FAIL" },
+    { user_id: 1, category: "deposit", code: null },
+  );
+  const calls = [];
+  const { events, logger } = captureLogger();
+  const service = createMarketReturnService({
+    db, now: () => new Date("2026-08-03T12:00:00+08:00"), logger, concurrency: 2,
+    calculate: async (category, code, lookbackDays) => {
+      calls.push({ category, code, lookbackDays });
+      if (code === "FAIL") throw new Error("bad symbol");
+      return sampleCalculation({ requestedDays: lookbackDays });
+    },
+  });
+  const summary = await service.prewarmAll();
+  assert.deepEqual(LOOKBACK_DAYS, [365, 1095, 1825, 3650]);
+  assert.deepEqual(calls.filter((call) => call.code === "QQQ").map((call) => call.lookbackDays).sort((a, b) => a - b), LOOKBACK_DAYS);
+  assert.equal(summary.succeeded, 4);
+  assert.equal(summary.failed, 4);
+  assert.ok(events.some((event) => event[2]?.event === "prewarm_start"));
+  assert.ok(events.some((event) => event[2]?.event === "prewarm_complete" && event[2]?.failed === 4));
 });
 
 test("daily asset snapshot uses complete rates and overwrites the same date", async () => {
