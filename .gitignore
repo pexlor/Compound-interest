@@ -40,5 +40,6 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+/.worktrees/
 .ffcode
 .context
