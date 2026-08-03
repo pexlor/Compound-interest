@@ -28,6 +28,11 @@ type Dependencies = {
 };
 
 const marketCategories = new Set(["stock", "fund", "money"]);
+const legacyUnadjustedUsSource = "腾讯证券美股历史行情（人民币汇率调整）";
+
+function isLegacyUnadjustedUsReturn(record: MarketReturnRecord | null) {
+  return record?.source === legacyUnadjustedUsSource;
+}
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "读取行情失败";
@@ -76,7 +81,7 @@ export function createMarketReturnService(dependencies: Dependencies) {
     const currentDate = shanghaiDate(now());
     const fields = { category, code, lookbackDays, calculationDate: currentDate };
     const cached = await findMarketReturn(dependencies.db, category, code, lookbackDays, currentDate);
-    if (cached) {
+    if (cached && !isLegacyUnadjustedUsReturn(cached)) {
       log("info", "cache_hit", fields);
       return cached;
     }
@@ -102,7 +107,7 @@ export function createMarketReturnService(dependencies: Dependencies) {
     } catch (error) {
       const message = errorMessage(error);
       const stale = await findLatestMarketReturn(dependencies.db, category, code, lookbackDays);
-      if (stale) {
+      if (stale && !isLegacyUnadjustedUsReturn(stale)) {
         log("warn", "stale_fallback", { ...fields, staleDate: stale.calculationDate, error: message });
         return { ...stale, stale: true };
       }

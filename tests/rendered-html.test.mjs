@@ -50,7 +50,7 @@ test("market rates load in a batch and delete updates the visible list", async (
   assert.match(dashboard, /近10年/);
   assert.match(market, /isUsSecurityCode/);
   assert.match(market, /`us\$\{resolvedCode\}`/);
-  assert.match(market, /腾讯证券美股历史行情/);
+  assert.match(market, /Yahoo Finance 复权收盘价/);
 });
 
 test("local authentication uses hashed passwords and server-only session cookies", async () => {

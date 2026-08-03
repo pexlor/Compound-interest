@@ -619,6 +619,30 @@ test("market return read-through logs cache hits and fills daily misses", async 
   assert.ok(events.some((event) => event[2]?.event === "calculate_success"));
 });
 
+test("legacy unadjusted US returns are recalculated instead of served from cache", async () => {
+  const { saveMarketReturn } = await load("db/market-returns.ts");
+  const { createMarketReturnService } = await load("app/api/market/market-return-service.ts");
+  const db = createMarketReturnDb();
+  await saveMarketReturn(db, sampleMarketReturn({
+    annualRate: -7,
+    source: "腾讯证券美股历史行情（人民币汇率调整）",
+  }));
+  let calculatorCalls = 0;
+  const service = createMarketReturnService({
+    db,
+    now: () => new Date("2026-08-03T12:00:00+08:00"),
+    calculate: async () => {
+      calculatorCalls += 1;
+      return sampleCalculation({ annualRate: 25.5, source: "Yahoo Finance 复权收盘价（人民币汇率调整）" });
+    },
+  });
+
+  const result = await service.get("stock", "GOOG", 1095);
+  assert.equal(calculatorCalls, 1);
+  assert.equal(result.annualRate, 25.5);
+  assert.match(result.source, /复权收盘价/);
+});
+
 test("market return read-through falls back to stale cache and logs the reason", async () => {
   const { saveMarketReturn } = await load("db/market-returns.ts");
   const { createMarketReturnService } = await load("app/api/market/market-return-service.ts");
@@ -948,6 +972,18 @@ function historicalRateResponse(url, rate = 7) {
   return Response.json([{ date, base: "USD", quote: "CNY", rate }]);
 }
 
+function yahooChartResponse(points) {
+  return Response.json({
+    chart: {
+      result: [{
+        timestamp: points.map(([date]) => Date.parse(`${date}T00:00:00Z`) / 1000),
+        indicators: { adjclose: [{ adjclose: points.map(([, adjustedClose]) => adjustedClose) }] },
+      }],
+      error: null,
+    },
+  });
+}
+
 test("historical USD/CNY rate uses the latest valid rate not after the market date", async () => {
   const { fetchHistoricalUsdCnyRate } = await load("app/api/market/historical-rates.ts");
   let requestedUrl = "";
@@ -1164,13 +1200,10 @@ test("stock returns trim overfetched history to the requested lookback", async (
   const fetch = async (url) => {
     urls.push(String(url));
     if (String(url).includes("frankfurter.dev")) return historicalRateResponse(url);
-    if (String(url).includes("usQQQ,day,,,2,qfq")) {
-      return Response.json({ data: { usQQQ: { qt: { usQQQ: ["delay", "QQQ", "QQQ.OQ"] } } } });
-    }
-    if (String(url).includes("usQQQ.OQ,day,,,2,qfq")) {
-      return Response.json({ data: { "usQQQ.OQ": { day: [["2026-08-02", "139", "139"], ["2026-08-03", "140", "140"]] } } });
-    }
-    return Response.json({ data: { "usQQQ.OQ": { day: [["2025-08-03", "100", "100"]] } } });
+    if (String(url).includes("query1.finance.yahoo.com")) return yahooChartResponse([
+      ["2025-07-30", 99], ["2025-08-03", 100], ["2026-08-03", 140],
+    ]);
+    throw new Error(`Unexpected URL: ${url}`);
   };
   const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
   const response = await handler(new Request("http://local/api/market?code=QQQ&category=stock&days=365"));
@@ -1181,8 +1214,8 @@ test("stock returns trim overfetched history to the requested lookback", async (
   assert.equal(payload.requestedDays, 365);
   assert.equal(payload.actualDays, 365);
   assert.equal(payload.historyLimited, false);
-  assert.equal(urls.length, 5);
-  assert.ok(urls[2].includes("day,2025-07-04,2025-08-03,30,qfq"));
+  assert.equal(urls.length, 3);
+  assert.ok(urls[0].includes("query1.finance.yahoo.com/v8/finance/chart/QQQ"));
 });
 
 test("US stock returns are converted to CNY with historical exchange rates", async () => {
@@ -1199,13 +1232,8 @@ test("US stock returns are converted to CNY with historical exchange rates", asy
       const date = new URL(value).searchParams.get("to");
       return historicalRateResponse(value, date === "2025-08-03" ? 7.2 : 6.6);
     }
-    if (value.includes("usQQQ,day,,,2,qfq")) {
-      return Response.json({ data: { usQQQ: { qt: { usQQQ: ["delay", "QQQ", "QQQ.OQ"] } } } });
-    }
-    if (value.includes("usQQQ.OQ,day,,,2,qfq")) {
-      return Response.json({ data: { "usQQQ.OQ": { day: [["2026-08-02", "119", "119"], ["2026-08-03", "120", "120"]] } } });
-    }
-    return Response.json({ data: { "usQQQ.OQ": { day: [["2025-08-03", "100", "100"]] } } });
+    if (value.includes("query1.finance.yahoo.com")) return yahooChartResponse([["2025-08-03", 100], ["2026-08-03", 120]]);
+    throw new Error(`Unexpected URL: ${url}`);
   };
   const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
   const response = await handler(new Request("http://local/api/market?code=QQQ&category=stock&days=365"));
@@ -1223,13 +1251,8 @@ test("US stock calculator uses an injected historical D1 rate reader", async () 
   const fetch = async (url) => {
     const value = String(url);
     if (value.includes("frankfurter.dev")) throw new Error("Frankfurter must not be called");
-    if (value.includes("usQQQ,day,,,2,qfq")) {
-      return Response.json({ data: { usQQQ: { qt: { usQQQ: ["delay", "QQQ", "QQQ.OQ"] } } } });
-    }
-    if (value.includes("usQQQ.OQ,day,,,2,qfq")) {
-      return Response.json({ data: { "usQQQ.OQ": { day: [["2026-08-02", "119", "119"], ["2026-08-03", "120", "120"]] } } });
-    }
-    return Response.json({ data: { "usQQQ.OQ": { day: [["2025-08-03", "100", "100"]] } } });
+    if (value.includes("query1.finance.yahoo.com")) return yahooChartResponse([["2025-08-03", 100], ["2026-08-03", 120]]);
+    throw new Error(`Unexpected URL: ${url}`);
   };
   const calculator = createMarketCalculator({
     fetch,
@@ -1249,13 +1272,8 @@ test("US stock return fails instead of falling back to USD when historical rates
   const fetch = async (url) => {
     const value = String(url);
     if (value.includes("frankfurter.dev")) return Response.json([]);
-    if (value.includes("usQQQ,day,,,2,qfq")) {
-      return Response.json({ data: { usQQQ: { qt: { usQQQ: ["delay", "QQQ", "QQQ.OQ"] } } } });
-    }
-    if (value.includes("usQQQ.OQ,day,,,2,qfq")) {
-      return Response.json({ data: { "usQQQ.OQ": { day: [["2026-08-02", "119", "119"], ["2026-08-03", "120", "120"]] } } });
-    }
-    return Response.json({ data: { "usQQQ.OQ": { day: [["2025-08-03", "100", "100"]] } } });
+    if (value.includes("query1.finance.yahoo.com")) return yahooChartResponse([["2025-08-03", 100], ["2026-08-03", 120]]);
+    throw new Error(`Unexpected URL: ${url}`);
   };
   const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
   const response = await handler(new Request("http://local/api/market?code=QQQ&category=stock&days=365"));
@@ -1269,14 +1287,8 @@ test("stock returns use the earliest price when the target date predates listing
   const fetch = async (url) => {
     urls.push(String(url));
     if (String(url).includes("frankfurter.dev")) return historicalRateResponse(url);
-    if (String(url).includes("usNEW,day,,,2,qfq")) {
-      return Response.json({ data: { usNEW: { qt: { usNEW: ["delay", "NEW", "NEW.OQ"] } } } });
-    }
-    if (String(url).includes("usNEW.OQ,day,,,2,qfq")) {
-      return Response.json({ data: { "usNEW.OQ": { day: [["2026-08-02", "139", "139"], ["2026-08-03", "140", "140"]] } } });
-    }
-    if (String(url).includes(",30,qfq")) return Response.json({ data: { "usNEW.OQ": { day: [] } } });
-    return Response.json({ data: { "usNEW.OQ": { day: [["2024-03-19", "100", "100"], ["2026-08-03", "140", "140"]] } } });
+    if (String(url).includes("query1.finance.yahoo.com")) return yahooChartResponse([["2024-03-19", 100], ["2026-08-03", 140]]);
+    throw new Error(`Unexpected URL: ${url}`);
   };
   const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
   const response = await handler(new Request("http://local/api/market?code=NEW&category=stock&days=3650"));
@@ -1287,8 +1299,7 @@ test("stock returns use the earliest price when the target date predates listing
   assert.equal(payload.requestedDays, 3650);
   assert.equal(payload.actualDays, 867);
   assert.equal(payload.historyLimited, true);
-  assert.equal(urls.length, 6);
-  assert.ok(urls[3].includes(",2000,qfq"));
+  assert.equal(urls.length, 3);
 });
 
 test("money fund returns never report n-year history as limited", async () => {
@@ -1366,13 +1377,8 @@ test("QQQ ten-year history uses a target-date window", async () => {
   const fetch = async (url) => {
     urls.push(String(url));
     if (String(url).includes("frankfurter.dev")) return historicalRateResponse(url);
-    if (String(url).includes("usQQQ,day,,,2,qfq")) {
-      return Response.json({ data: { usQQQ: { qt: { usQQQ: ["delay", "QQQ", "QQQ.OQ"] } } } });
-    }
-    if (String(url).includes("usQQQ.OQ,day,,,2,qfq")) {
-      return Response.json({ data: { "usQQQ.OQ": { day: [["2026-07-30", "680", "680"], ["2026-07-31", "687.99", "687.99"]] } } });
-    }
-    return Response.json({ data: { "usQQQ.OQ": { day: [["2016-08-02", "100", "100"]] } } });
+    if (String(url).includes("query1.finance.yahoo.com")) return yahooChartResponse([["2016-08-02", 100], ["2026-07-31", 687.99]]);
+    throw new Error(`Unexpected URL: ${url}`);
   };
   const handler = createMarketHandler({ authenticate: async () => ({ id: 1 }), fetch });
   const response = await handler(new Request("http://local/api/market?code=QQQ&category=stock&days=3650"));
@@ -1380,8 +1386,25 @@ test("QQQ ten-year history uses a target-date window", async () => {
   const payload = await response.json();
   assert.equal(payload.startDate, "2016-08-02");
   assert.equal(payload.endDate, "2026-07-31");
-  assert.equal(urls.length, 5);
-  assert.ok(urls[2].includes("day,2016-07-03,2016-08-02,30,qfq"));
+  assert.equal(urls.length, 3);
+  assert.ok(urls[0].includes("events=div%2Csplits"));
+});
+
+test("GOOG ten-year return uses split-adjusted close prices", async () => {
+  const { createMarketCalculator } = await load("app/api/market/calculator.ts");
+  const calculator = createMarketCalculator({
+    fetch: async (url) => {
+      if (String(url).includes("query1.finance.yahoo.com")) {
+        return yahooChartResponse([["2016-08-05", 38.769184], ["2026-08-03", 372.47]]);
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    historicalRate: async (date) => ({ date, rate: date === "2016-08-05" ? 6.6447 : 6.7491 }),
+  });
+  const result = await calculator.calculate("stock", "GOOG", 3650);
+  assert.ok(result.annualRate > 25 && result.annualRate < 26);
+  assert.ok(result.periodReturn > 800);
+  assert.match(result.source, /复权收盘价/);
 });
 
 const validRates = ["USD", "HKD", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "CHF"].map((quote) => ({

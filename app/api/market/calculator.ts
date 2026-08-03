@@ -31,6 +31,17 @@ type CalculatorDependencies = {
   maxConcurrent?: number;
 };
 
+type YahooChartPoint = { date: string; adjustedClose: number };
+type YahooChartResponse = {
+  chart?: {
+    result?: Array<{
+      timestamp?: number[];
+      indicators?: { adjclose?: Array<{ adjclose?: Array<number | null> }> };
+    }>;
+    error?: { description?: string } | null;
+  };
+};
+
 function domesticStockSymbol(code: string) {
   if (/^(5|6|9)/.test(code)) return `sh${code}`;
   if (/^(0|1|2|3)/.test(code)) return `sz${code}`;
@@ -111,8 +122,63 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
     return resolvedCode ? `us${resolvedCode}` : lookupSymbol;
   }
 
+  async function usStockReturn(code: string, days: number): Promise<MarketCalculation> {
+    const secondsPerDay = 86400;
+    const period2 = Math.floor(Date.now() / 1000) + secondsPerDay;
+    const period1 = period2 - (days + 45) * secondsPerDay;
+    const yahooSymbol = code.replaceAll(".", "-");
+    const params = new URLSearchParams({
+      period1: String(period1),
+      period2: String(period2),
+      interval: "1d",
+      events: "div,splits",
+      includeAdjustedClose: "true",
+    });
+    const response = await upstreamFetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?${params}`);
+    if (!response.ok) throw new Error("美股复权行情服务暂时不可用");
+    const json = (await response.json()) as YahooChartResponse;
+    const result = json.chart?.result?.[0];
+    const timestamps = result?.timestamp ?? [];
+    const adjustedCloses = result?.indicators?.adjclose?.[0]?.adjclose ?? [];
+    const points: YahooChartPoint[] = timestamps.flatMap((timestamp, index) => {
+      const adjustedClose = adjustedCloses[index];
+      if (!Number.isFinite(adjustedClose) || Number(adjustedClose) <= 0) return [];
+      return [{
+        date: new Date(timestamp * 1000).toISOString().slice(0, 10),
+        adjustedClose: Number(adjustedClose),
+      }];
+    });
+    if (points.length < 1) {
+      throw new Error(json.chart?.error?.description || "没有找到这个股票代码的复权历史行情");
+    }
+    points.sort((left, right) => left.date.localeCompare(right.date));
+    const last = points.at(-1)!;
+    const targetTime = Date.parse(last.date) - days * 86400000;
+    const eligible = points.filter((point) => Date.parse(point.date) <= targetTime);
+    const first = eligible.at(-1) ?? points[0];
+    const historyLimited = eligible.length === 0;
+    const readHistoricalRate = dependencies.historicalRate
+      ?? ((marketDate: string) => fetchHistoricalUsdCnyRate((url) => upstreamFetch(url, historicalTimeoutMs), marketDate));
+    const startRate = await readHistoricalRate(first.date);
+    const endRate = await readHistoricalRate(last.date);
+    const start = first.adjustedClose * startRate.rate;
+    const end = last.adjustedClose * endRate.rate;
+    const actualDays = Math.max(1, (Date.parse(last.date) - Date.parse(first.date)) / 86400000);
+    return {
+      annualRate: annualize(start, end, actualDays),
+      periodReturn: (end / start - 1) * 100,
+      requestedDays: days,
+      actualDays,
+      historyLimited,
+      startDate: first.date,
+      endDate: last.date,
+      source: "Yahoo Finance 复权收盘价（人民币汇率调整）",
+    };
+  }
+
   async function stockReturn(code: string, days: number): Promise<MarketCalculation> {
     const isUsSecurity = isUsSecurityCode(code);
+    if (isUsSecurity) return usStockReturn(code, days);
     const symbol = await resolveStockSymbol(code);
     const rawSymbol = isUsSecurity ? `us${code}` : symbol;
     const candidates = symbol === rawSymbol ? [symbol] : [symbol, rawSymbol];
@@ -159,17 +225,8 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
     selected ??= earliestFallback;
     if (!selected) throw (lastError instanceof Error ? lastError : new Error("没有找到这个股票代码的历史行情"));
     const { first, last } = selected;
-    let start = Number(first[2]);
-    let end = Number(last[2]);
-    if (isUsSecurity) {
-      const historicalFetch = (url: string) => upstreamFetch(url, historicalTimeoutMs);
-      const readHistoricalRate = dependencies.historicalRate
-        ?? ((marketDate: string) => fetchHistoricalUsdCnyRate(historicalFetch, marketDate));
-      const startRate = await readHistoricalRate(String(first[0]));
-      const endRate = await readHistoricalRate(String(last[0]));
-      start *= startRate.rate;
-      end *= endRate.rate;
-    }
+    const start = Number(first[2]);
+    const end = Number(last[2]);
     const actualDays = Math.max(1, (Date.parse(String(last[0])) - Date.parse(String(first[0]))) / 86400000);
     return {
       annualRate: annualize(start, end, actualDays),
@@ -179,7 +236,7 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
       historyLimited,
       startDate: String(first[0]),
       endDate: String(last[0]),
-      source: isUsSecurity ? "腾讯证券美股历史行情（人民币汇率调整）" : "腾讯证券历史复权行情",
+      source: "腾讯证券历史复权行情",
     };
   }
 
