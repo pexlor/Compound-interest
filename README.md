@@ -26,7 +26,7 @@
 
 macOS 可以直接双击项目目录中的 `start-local.command`。脚本会自动检查运行环境、首次安装依赖，并在服务启动后打开浏览器。
 
-Linux 可以执行一键启动脚本。默认监听所有网卡的 3000 端口，并将本地数据库保存在 `.wrangler/state`：
+Linux 可以执行一键启动脚本。脚本每次会先停止上一次启动的实例，再构建并在后台启动服务。默认监听所有网卡的 3000 端口，并将本地数据库保存在 `.wrangler/state`：
 
 ```bash
 ./start-linux.sh
@@ -37,6 +37,8 @@ Linux 可以执行一键启动脚本。默认监听所有网卡的 3000 端口�
 ```bash
 APP_HOST=127.0.0.1 APP_PORT=3100 ./start-linux.sh
 ```
+
+启动完成后可以直接关闭终端。后台进程号保存在 `.wrangler/fulibu.pid`，运行日志保存在 `.wrangler/fulibu.log`。再次执行脚本即可重启服务。
 
 在当前项目目录打开终端，然后执行：
 
