@@ -3,7 +3,8 @@ type Logger = Pick<Console, "error">;
 
 type LifecycleDependencies<Env, Context extends WaitUntilContext> = {
   handleRequest(request: Request, env: Env, ctx: Context): Promise<Response>;
-  prewarm(env: Env, trigger: "startup" | "scheduled"): Promise<unknown>;
+  startup(env: Env): Promise<unknown>;
+  scheduled(controller: { cron: string }, env: Env): Promise<unknown>;
   logger?: Logger;
 };
 
@@ -11,14 +12,14 @@ export function createWorkerLifecycle<Env, Context extends WaitUntilContext>(
   dependencies: LifecycleDependencies<Env, Context>,
 ) {
   const logger = dependencies.logger ?? console;
-  let startupWarmup: Promise<void> | null = null;
+  let startupJob: Promise<void> | null = null;
 
-  function runPrewarm(env: Env, trigger: "startup" | "scheduled") {
-    return dependencies.prewarm(env, trigger).then(
+  function run(operation: () => Promise<unknown>, trigger: "startup" | "scheduled") {
+    return operation().then(
       () => undefined,
       (error) => {
-        logger.error("[market-return]", {
-          event: "prewarm_failed",
+        logger.error("[worker-lifecycle]", {
+          event: "background_failed",
           trigger,
           error: error instanceof Error ? error.message : "市场收益预热失败",
         });
@@ -28,12 +29,12 @@ export function createWorkerLifecycle<Env, Context extends WaitUntilContext>(
 
   return {
     async fetch(request: Request, env: Env, ctx: Context) {
-      startupWarmup ??= runPrewarm(env, "startup");
-      ctx.waitUntil(startupWarmup);
+      startupJob ??= run(() => dependencies.startup(env), "startup");
+      ctx.waitUntil(startupJob);
       return dependencies.handleRequest(request, env, ctx);
     },
-    scheduled(_controller: unknown, env: Env, ctx: Context) {
-      ctx.waitUntil(runPrewarm(env, "scheduled"));
+    scheduled(controller: { cron: string }, env: Env, ctx: Context) {
+      ctx.waitUntil(run(() => dependencies.scheduled(controller, env), "scheduled"));
     },
   };
 }

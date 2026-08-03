@@ -1,12 +1,15 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { createExchangeRateHistorySync } from "../app/api/exchange-rates/history-sync";
 import { prewarmMarketReturns } from "../app/api/market/prewarm";
+import { initializeAssetsDb } from "../db/assets";
 import { createWorkerLifecycle } from "./lifecycle";
 
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  RATES: R2Bucket;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -44,7 +47,35 @@ const worker = createWorkerLifecycle<Env, ExecutionContext>({
 
     return handler.fetch(request, env, ctx);
   },
-  prewarm: (env) => prewarmMarketReturns(env.DB, (input, init) => fetch(input, init)),
+  async startup(env) {
+    await initializeAssetsDb(env.DB);
+    try {
+      await createExchangeRateHistorySync({
+        db: env.DB,
+        bucket: env.RATES,
+        fetch: (input, init) => fetch(input, init),
+      }).sync();
+    } catch (error) {
+      console.error("[exchange-rate-history]", {
+        event: "startup_sync_failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return prewarmMarketReturns(env.DB, (input, init) => fetch(input, init));
+  },
+  scheduled(controller, env) {
+    if (controller.cron === "0 16 * * *") {
+      return initializeAssetsDb(env.DB).then(() => createExchangeRateHistorySync({
+        db: env.DB,
+        bucket: env.RATES,
+        fetch: (input, init) => fetch(input, init),
+      }).sync());
+    }
+    if (controller.cron === "10 20 * * *") {
+      return prewarmMarketReturns(env.DB, (input, init) => fetch(input, init));
+    }
+    return Promise.resolve();
+  },
 });
 
 export default worker;

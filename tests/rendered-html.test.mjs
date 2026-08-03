@@ -120,9 +120,18 @@ test("market returns load in one batch and show limited-history details", async 
   assert.doesNotMatch(dashboard, /Promise\.all\(assets\.map\(async \(asset\)/);
 });
 
-test("Worker config schedules market return prewarm for 04:10 Shanghai time", async () => {
-  const [viteConfig, worker] = await Promise.all([read("vite.config.ts"), read("worker/index.ts")]);
-  assert.match(viteConfig, /crons:\s*\["10 20 \* \* \*"\]/);
+test("Worker config binds R2 and separates midnight exchange sync from 04:10 market prewarm", async () => {
+  const [viteConfig, worker, hosting] = await Promise.all([
+    read("vite.config.ts"),
+    read("worker/index.ts"),
+    read(".openai/hosting.json"),
+  ]);
+  assert.match(viteConfig, /crons:\s*\["0 16 \* \* \*",\s*"10 20 \* \* \*"\]/);
+  assert.match(hosting, /"r2":\s*"RATES"/);
   assert.match(worker, /createWorkerLifecycle/);
+  assert.match(worker, /RATES:\s*R2Bucket/);
+  assert.match(worker, /createExchangeRateHistorySync/);
+  assert.match(worker, /controller\.cron === "0 16 \* \* \*"/);
+  assert.match(worker, /controller\.cron === "10 20 \* \* \*"/);
   assert.match(worker, /prewarmMarketReturns/);
 });
