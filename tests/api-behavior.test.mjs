@@ -163,6 +163,142 @@ function createMarketReturnDb() {
   return db;
 }
 
+function createExchangeRateHistoryDb() {
+  const rows = new Map();
+  const exchangeRates = new Map();
+  const batchSizes = [];
+  const statement = (sql, values = []) => ({
+    sql,
+    values,
+    bind(...nextValues) {
+      return statement(sql, nextValues);
+    },
+    async first() {
+      if (sql.includes("FROM exchange_rate_history")) {
+        const [currency, onOrBefore] = values;
+        return [...rows.values()]
+          .filter((row) => row.currency === currency && row.rate_date <= onOrBefore)
+          .sort((a, b) => b.rate_date.localeCompare(a.rate_date))[0] ?? null;
+      }
+      throw new Error(`Unexpected exchange rate history first query: ${sql}`);
+    },
+    async all() {
+      if (sql.includes("FROM exchange_rates")) return { results: [...exchangeRates.values()] };
+      if (sql.includes("FROM exchange_rate_history")) return { results: [...rows.values()] };
+      throw new Error(`Unexpected exchange rate history all query: ${sql}`);
+    },
+  });
+  return {
+    rows,
+    exchangeRates,
+    batchSizes,
+    prepare(sql) {
+      return statement(sql);
+    },
+    async batch(statements) {
+      batchSizes.push(statements.length);
+      return statements.map(({ sql, values }) => {
+        if (sql.startsWith("INSERT OR IGNORE INTO exchange_rate_history")) {
+          const [currency, cnyRate, rateDate, source, fetchedAt] = values;
+          const key = `${currency}:${rateDate}`;
+          if (rows.has(key)) return { meta: { changes: 0 } };
+          rows.set(key, {
+            currency, cny_rate: cnyRate, rate_date: rateDate, source, fetched_at: fetchedAt,
+          });
+          return { meta: { changes: 1 } };
+        }
+        if (sql.startsWith("INSERT INTO exchange_rates")) {
+          const [currency, cnyRate, rateDate] = values;
+          exchangeRates.set(currency, { currency, cny_rate: cnyRate, rate_date: rateDate });
+          return { meta: { changes: 1 } };
+        }
+        throw new Error(`Unexpected exchange rate history batch query: ${sql}`);
+      });
+    },
+  };
+}
+
+function sampleExchangeRateHistoryEntry(index, overrides = {}) {
+  return {
+    currency: "USD",
+    cnyRate: 7 + index / 1000,
+    rateDate: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+    source: "test",
+    fetchedAt: "2026-08-03T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+test("exchange rate history inserts idempotently in batches of at most 100", async () => {
+  const { importExchangeRateHistory } = await load("db/exchange-rate-history.ts");
+  const db = createExchangeRateHistoryDb();
+  const entries = Array.from({ length: 202 }, (_, index) => sampleExchangeRateHistoryEntry(index));
+
+  assert.deepEqual(await importExchangeRateHistory(db, entries), { inserted: 202 });
+  assert.deepEqual(db.batchSizes, [100, 100, 2]);
+
+  const changed = entries.map((entry) => ({ ...entry, cnyRate: entry.cnyRate + 1 }));
+  assert.deepEqual(await importExchangeRateHistory(db, changed), { inserted: 0 });
+  assert.equal(db.rows.get(`${entries[0].currency}:${entries[0].rateDate}`).cny_rate, entries[0].cnyRate);
+});
+
+test("exchange rate history inserts are found by the latest date on or before the target", async () => {
+  const { findHistoricalCnyRate, importExchangeRateHistory } = await load("db/exchange-rate-history.ts");
+  const db = createExchangeRateHistoryDb();
+  await importExchangeRateHistory(db, [
+    sampleExchangeRateHistoryEntry(0, { rateDate: "2026-07-30", cnyRate: 7.1 }),
+    sampleExchangeRateHistoryEntry(1, { rateDate: "2026-07-31", cnyRate: 7.2 }),
+    sampleExchangeRateHistoryEntry(2, { rateDate: "2026-08-01", cnyRate: 7.3 }),
+  ]);
+
+  assert.deepEqual(await findHistoricalCnyRate(db, "USD", "2026-07-31"), {
+    currency: "USD",
+    cnyRate: 7.2,
+    rateDate: "2026-07-31",
+    source: "test",
+    fetchedAt: "2026-08-03T00:00:00.000Z",
+  });
+  assert.equal(await findHistoricalCnyRate(db, "HKD", "2026-07-31"), null);
+});
+
+const supportedExchangeRateCurrencies = ["USD", "HKD", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "CHF"];
+
+test("latest exchange rates require all supported currencies from one date", async () => {
+  const { readLatestExchangeRates } = await load("db/exchange-rate-history.ts");
+  const db = createExchangeRateHistoryDb();
+  supportedExchangeRateCurrencies.slice(0, -1).forEach((currency, index) => {
+    db.exchangeRates.set(currency, { currency, cny_rate: index + 1, rate_date: "2026-07-31" });
+  });
+  assert.equal(await readLatestExchangeRates(db), null);
+
+  db.exchangeRates.set("CHF", { currency: "CHF", cny_rate: 9, rate_date: "2026-07-30" });
+  assert.equal(await readLatestExchangeRates(db), null);
+
+  db.exchangeRates.get("CHF").rate_date = "2026-07-31";
+  assert.deepEqual(await readLatestExchangeRates(db), {
+    rates: Object.fromEntries(supportedExchangeRateCurrencies.map((currency, index) => [currency, index + 1])),
+    date: "2026-07-31",
+  });
+});
+
+test("latest exchange rates refresh from the newest complete historical date", async () => {
+  const { importExchangeRateHistory, refreshLatestExchangeRates } = await load("db/exchange-rate-history.ts");
+  const db = createExchangeRateHistoryDb();
+  const complete = supportedExchangeRateCurrencies.map((currency, index) => sampleExchangeRateHistoryEntry(index, {
+    currency,
+    cnyRate: index + 1,
+    rateDate: "2026-07-31",
+  }));
+  const incompleteNewer = complete.slice(0, -1).map((entry) => ({ ...entry, rateDate: "2026-08-01", cnyRate: entry.cnyRate + 10 }));
+  await importExchangeRateHistory(db, [...complete, ...incompleteNewer]);
+
+  await refreshLatestExchangeRates(db);
+
+  assert.equal(db.exchangeRates.size, supportedExchangeRateCurrencies.length);
+  assert.ok([...db.exchangeRates.values()].every((row) => row.rate_date === "2026-07-31"));
+  assert.equal(db.exchangeRates.get("USD").cny_rate, 1);
+});
+
 function sampleMarketReturn(overrides = {}) {
   return {
     category: "stock", code: "QQQ", lookbackDays: 1095, calculationDate: "2026-08-03",

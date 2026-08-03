@@ -65,6 +65,17 @@ export async function initializeAssetsDb(db: D1Database) {
       )
     `),
     db.prepare(`
+      CREATE TABLE IF NOT EXISTS exchange_rate_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        currency TEXT NOT NULL,
+        cny_rate REAL NOT NULL,
+        rate_date TEXT NOT NULL,
+        source TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        UNIQUE (currency, rate_date)
+      )
+    `),
+    db.prepare(`
       CREATE TABLE IF NOT EXISTS asset_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -119,6 +130,7 @@ export async function initializeAssetsDb(db: D1Database) {
     db.prepare("CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id)"),
     db.prepare("CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions (expires_at)"),
     db.prepare("CREATE INDEX IF NOT EXISTS asset_history_user_id_idx ON asset_history (user_id)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS exchange_rate_history_lookup_idx ON exchange_rate_history (currency, rate_date)"),
     db.prepare("CREATE INDEX IF NOT EXISTS market_returns_lookup_idx ON market_returns (category, code, lookback_days, calculation_date)"),
   ]);
 }

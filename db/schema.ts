@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -39,6 +39,18 @@ export const exchangeRates = sqliteTable("exchange_rates", {
   rateDate: text("rate_date").notNull(),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const exchangeRateHistory = sqliteTable("exchange_rate_history", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  currency: text("currency").notNull(),
+  cnyRate: real("cny_rate").notNull(),
+  rateDate: text("rate_date").notNull(),
+  source: text("source").notNull(),
+  fetchedAt: text("fetched_at").notNull(),
+}, (table) => [
+  uniqueIndex("exchange_rate_history_currency_date_unique").on(table.currency, table.rateDate),
+  index("exchange_rate_history_lookup_idx").on(table.currency, table.rateDate),
+]);
 
 export const assetHistory = sqliteTable("asset_history", {
   id: integer("id").primaryKey({ autoIncrement: true }),

@@ -43,6 +43,13 @@
       "when": 1785759847477,
       "tag": "0005_fair_carnage",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785762063700,
+      "tag": "0006_acoustic_firelord",
+      "breakpoints": true
     }
   ]
 }
