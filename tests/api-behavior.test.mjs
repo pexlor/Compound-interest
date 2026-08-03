@@ -436,6 +436,29 @@ test("exchange history sync advances an existing file after an empty incremental
   assert.equal(JSON.parse(bucket.currentText()).checkedThrough, "2026-08-02");
 });
 
+test("exchange history sync never fetches earlier than the rolling ten-year cutoff", async () => {
+  const { createExchangeRateHistorySync } = await load("app/api/exchange-rates/history-sync.ts");
+  const existing = {
+    version: 1,
+    base: "CNY",
+    checkedThrough: "2010-01-01",
+    updatedAt: "2010-01-01T00:00:00.000Z",
+    dates: {},
+  };
+  const fetcher = createHistoryFetcher(() => []);
+
+  await createExchangeRateHistorySync({
+    db: createExchangeRateHistoryDb(),
+    bucket: createMemoryRatesBucket(JSON.stringify(existing)),
+    fetch: fetcher,
+    now: () => new Date("2026-08-03T12:00:00.000Z"),
+    logger: silentHistoryLogger,
+  }).sync();
+
+  assert.equal(fetcher.urls[0].searchParams.get("from"), "2016-08-03");
+  assert.equal(fetcher.urls.length, 10);
+});
+
 test("exchange history sync never overwrites R2 after a failed window or damaged file", async () => {
   const { createExchangeRateHistorySync } = await load("app/api/exchange-rates/history-sync.ts");
   const failedBucket = createMemoryRatesBucket();
@@ -1318,7 +1341,7 @@ test("exchange-rate API syncs stale D1 rates and force refresh records a snapsho
   const db = { name: "db" };
   const syncOptions = [];
   const snapshots = [];
-  let currentDate = "2026-07-31";
+  const currentDate = "2026-07-31";
   const handler = createExchangeRatesHandler({
     authenticate: async () => ({ id: 7 }),
     fetch: async () => { throw new Error("upstream must not be called"); },
@@ -1329,7 +1352,6 @@ test("exchange-rate API syncs stale D1 rates and force refresh records a snapsho
     }),
     syncHistory: async (_db, options) => {
       syncOptions.push(options);
-      currentDate = "2026-08-03";
     },
     recordDailySnapshot: async (...args) => {
       snapshots.push(args);
@@ -1338,7 +1360,9 @@ test("exchange-rate API syncs stale D1 rates and force refresh records a snapsho
     now: () => Date.parse("2026-08-03T12:00:00.000Z"),
   });
 
-  assert.equal((await (await handler(new Request("http://local/api/exchange-rates"))).json()).date, "2026-08-03");
+  assert.equal((await (await handler(new Request("http://local/api/exchange-rates"))).json()).date, "2026-07-31");
+  assert.equal((await (await handler(new Request("http://local/api/exchange-rates"))).json()).date, "2026-07-31");
+  assert.deepEqual(syncOptions, [{}]);
   const forced = await handler(new Request("http://local/api/exchange-rates?refresh=1"));
   assert.deepEqual(syncOptions, [{}, { forceLatest: true }]);
   assert.deepEqual(snapshots[0], [db, 7, "exchange_refresh"]);

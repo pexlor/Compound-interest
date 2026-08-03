@@ -120,7 +120,8 @@ export function createExchangeRateHistorySync(dependencies: Dependencies) {
         for (let attempt = 1; attempt <= MAX_WRITE_ATTEMPTS; attempt += 1) {
           const stored = await readFile();
           const original = stored.file ?? createEmptyHistoryFile(addDays(cutoffDate, -1));
-          const from = addDays(original.checkedThrough, 1);
+          const nextUncheckedDate = addDays(original.checkedThrough, 1);
+          const from = nextUncheckedDate < cutoffDate ? cutoffDate : nextUncheckedDate;
           const windows = historyWindows(from, checkedThrough);
           const rows: RateRow[] = [];
           for (const window of windows) {

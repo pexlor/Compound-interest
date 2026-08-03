@@ -21,6 +21,7 @@ export function createExchangeRatesHandler(dependencies: Dependencies) {
   const cacheTtlMs = dependencies.cacheTtlMs ?? 15 * 60 * 1000;
   const timeoutMs = dependencies.timeoutMs ?? 5000;
   let cache: (RatesPayload & { expiresAt: number }) | null = null;
+  let historyCheckedThrough: string | null = null;
 
   async function upstreamFetch(url: URL | string) {
     const controller = new AbortController();
@@ -90,8 +91,9 @@ export function createExchangeRatesHandler(dependencies: Dependencies) {
         const db = await dependencies.getAssetsDb();
         latest = await dependencies.readLatestRates(db);
         const currentUtcDate = new Date(now()).toISOString().slice(0, 10);
-        if (force || !latest || latest.date < currentUtcDate) {
+        if (force || ((!latest || latest.date < currentUtcDate) && historyCheckedThrough !== currentUtcDate)) {
           await dependencies.syncHistory(db, force ? { forceLatest: true } : {});
+          historyCheckedThrough = currentUtcDate;
           latest = await dependencies.readLatestRates(db);
         }
         if (latest) {
