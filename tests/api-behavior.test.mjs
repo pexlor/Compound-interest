@@ -852,6 +852,20 @@ test("fund investment strategy can be changed after creation", async () => {
   assert.equal((await changed.json()).investmentStrategy, "monthly");
 });
 
+test("stocks cannot be created with an investment strategy", async () => {
+  const { createAssetsHandlers } = await load("app/api/assets/handlers.ts");
+  const handlers = createAssetsHandlers({ getAuthenticatedUser: async () => ({ id: 1 }), getAssetsDb: async () => createAssetDb() });
+  const response = await handlers.POST(new Request("http://local/api/assets", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "QQQ", category: "stock", code: "QQQ", amount: 700, quantity: 1,
+      currency: "USD", annualRate: 5, investmentStrategy: "monthly", investmentAmount: 100,
+    }),
+  }));
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /基金定投策略/);
+});
+
 test("asset API rejects unsafe numeric values", async () => {
   const { createAssetsHandlers } = await load("app/api/assets/handlers.ts");
   const handlers = createAssetsHandlers({

@@ -6,8 +6,8 @@ const supportedCurrencies = new Set(["CNY", "USD", "HKD", "EUR", "JPY", "GBP", "
 const supportedInvestmentStrategies = new Set(["none", "monthly", "weekly", "yearly", "daily"]);
 const MAX_AMOUNT = Number.MAX_SAFE_INTEGER / 100;
 
-function supportsInvestment(category: string, code: string | null) {
-  return category === "fund" || category === "stock" && Boolean(code && /^[A-Z][A-Z0-9.-]*$/i.test(code));
+function supportsInvestment(category: string, _code: string | null) {
+  return category === "fund";
 }
 
 type User = { id: number };
@@ -140,7 +140,7 @@ export function createAssetsHandlers(dependencies: Dependencies) {
         const strategy = body.investmentStrategy?.trim() || "none";
         const investmentAmount = strategy === "none" ? null : validAmount(body.investmentAmount);
         if (!supportedInvestmentStrategies.has(strategy) || strategy !== "none" && investmentAmount === null) return Response.json({ error: "基金定投策略或金额无效" }, { status: 400 });
-        const result = await db.prepare(`UPDATE assets SET investment_strategy = ?, investment_amount = ? WHERE id = ? AND user_id = ?${strategy === "none" ? "" : " AND (category = 'fund' OR (category = 'stock' AND code IS NOT NULL AND code NOT GLOB '[0-9]*'))"}`)
+        const result = await db.prepare(`UPDATE assets SET investment_strategy = ?, investment_amount = ? WHERE id = ? AND user_id = ?${strategy === "none" ? "" : " AND category = 'fund'"}`)
           .bind(strategy, investmentAmount, id, user.id).run();
         if (!result.meta.changes) return Response.json({ error: "资产不存在或不是基金" }, { status: 404 });
         return Response.json({ ok: true, investmentStrategy: strategy, investmentAmount, snapshot: await snapshot(db, user.id) });
@@ -158,7 +158,7 @@ export function createAssetsHandlers(dependencies: Dependencies) {
         const investmentAmount = strategy === "none" ? null : validAmount(body.investmentAmount);
         if (changesInvestment && (!supportedInvestmentStrategies.has(strategy) || strategy !== "none" && investmentAmount === null)) return Response.json({ error: "基金定投策略或金额无效" }, { status: 400 });
         const result = changesInvestment
-          ? await db.prepare(`UPDATE assets SET amount = ?, quantity = COALESCE(?, quantity), currency = ?, investment_strategy = ?, investment_amount = ? WHERE id = ? AND user_id = ?${strategy === "none" ? "" : " AND (category = 'fund' OR (category = 'stock' AND code IS NOT NULL AND code NOT GLOB '[0-9]*'))"}`)
+          ? await db.prepare(`UPDATE assets SET amount = ?, quantity = COALESCE(?, quantity), currency = ?, investment_strategy = ?, investment_amount = ? WHERE id = ? AND user_id = ?${strategy === "none" ? "" : " AND category = 'fund'"}`)
             .bind(amount, quantity ?? null, currency, strategy, investmentAmount, id, user.id).run()
           : await db.prepare("UPDATE assets SET amount = ?, quantity = COALESCE(?, quantity), currency = ? WHERE id = ? AND user_id = ?")
             .bind(amount, quantity ?? null, currency, id, user.id).run();

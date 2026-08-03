@@ -117,6 +117,17 @@ test("stocks and funds use decimal quantities with live market prices", async ()
   assert.match(migration, /ADD `quantity` real/);
 });
 
+test("only funds expose and accept investment strategies", async () => {
+  const [dashboard, assetsRoute] = await Promise.all([
+    read("app/Dashboard.tsx"),
+    read("app/api/assets/handlers.ts"),
+  ]);
+  assert.match(dashboard, /supportsInvestment = \(asset:[^\n]+\) => asset\.category === "fund"/);
+  assert.match(dashboard, /asset\.category === "fund" && asset\.investment_strategy/);
+  assert.match(assetsRoute, /return category === "fund"/);
+  assert.doesNotMatch(assetsRoute, /category = 'fund' OR \(category = 'stock'/);
+});
+
 test("asset history renders a trend chart, change table, and empty state", async () => {
   const dashboard = await read("app/Dashboard.tsx");
   assert.match(dashboard, /\/api\/history/);

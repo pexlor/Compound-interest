@@ -92,8 +92,7 @@ const priceText = (value: number, currency: Currency) => new Intl.NumberFormat("
   style: "currency", currency, maximumFractionDigits: 4,
 }).format(value);
 
-const supportsInvestment = (asset: Pick<Asset, "category" | "code">) =>
-  asset.category === "fund" || (asset.category === "stock" && Boolean(asset.code && /^[A-Z][A-Z0-9.-]*$/i.test(asset.code)));
+const supportsInvestment = (asset: Pick<Asset, "category">) => asset.category === "fund";
 
 const marketKey = (category: string, code: string) => `${category}:${code.trim().toUpperCase()}`;
 
@@ -528,7 +527,7 @@ export default function Dashboard() {
               const cnyAmount = toCny(asset, exchangeRates);
               return <button className="asset-row" key={asset.id} onClick={() => setSelected(asset)}>
                 <span className="asset-icon" style={{ background: `${meta.color}18`, color: meta.color }}>{meta.short}</span>
-                <span className="asset-main"><strong>{asset.name}</strong><small>{meta.name}{asset.code ? ` · ${asset.code}` : ""}{asset.quantity ? ` · ${quantityText(asset.quantity)} ${asset.category === "stock" ? "股" : "份"}` : ""}{asset.investment_strategy && asset.investment_strategy !== "none" ? ` · 定投${asset.investment_amount ? ` ${asset.investment_amount / 100}` : ""}` : ""} · {asset.note}</small></span>
+                <span className="asset-main"><strong>{asset.name}</strong><small>{meta.name}{asset.code ? ` · ${asset.code}` : ""}{asset.quantity ? ` · ${quantityText(asset.quantity)} ${asset.category === "stock" ? "股" : "份"}` : ""}{asset.category === "fund" && asset.investment_strategy && asset.investment_strategy !== "none" ? ` · 定投${asset.investment_amount ? ` ${asset.investment_amount / 100}` : ""}` : ""} · {asset.note}</small></span>
                 <span className="asset-rate">
                   <small>{asset.category === "fixed" ? "不计收益" : "预测年化"}</small>
                   <strong className={asset.annual_rate < 0 ? "negative" : ""}>{asset.category === "fixed" ? "—" : `${asset.annual_rate.toFixed(2)}%`}</strong>
