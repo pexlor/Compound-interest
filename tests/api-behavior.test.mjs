@@ -263,6 +263,62 @@ test("exchange rate history inserts are found by the latest date on or before th
 
 const supportedExchangeRateCurrencies = ["USD", "HKD", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "CHF"];
 
+function sampleFrankfurterRows(date = "2026-07-31") {
+  return supportedExchangeRateCurrencies.map((currency, index) => ({
+    date,
+    base: "CNY",
+    quote: currency,
+    rate: 0.1 + index / 100,
+  }));
+}
+
+test("exchange history file validates, converts all currencies, and keeps a rolling ten-year window", async () => {
+  const {
+    createEmptyHistoryFile,
+    mergeRateRows,
+    parseHistoryFile,
+    pruneHistoryFile,
+  } = await load("app/api/exchange-rates/history-file.ts");
+  const empty = createEmptyHistoryFile("2016-08-03");
+  const merged = mergeRateRows(
+    empty,
+    sampleFrankfurterRows(),
+    "2026-08-02",
+    new Date("2026-08-03T00:00:00+08:00"),
+  );
+
+  assert.equal(merged.dates["2026-07-31"].rates.USD, 10);
+  assert.deepEqual(Object.keys(merged.dates["2026-07-31"].rates).sort(), [...supportedExchangeRateCurrencies].sort());
+  assert.equal(merged.checkedThrough, "2026-08-02");
+  assert.deepEqual(parseHistoryFile(JSON.stringify(merged)), merged);
+  assert.throws(() => parseHistoryFile('{"version":2}'), /不支持的汇率历史文件版本/);
+  assert.throws(() => parseHistoryFile('{"version":1,"base":"CNY"}'), /汇率历史文件格式无效/);
+
+  const withOldDate = {
+    ...merged,
+    dates: { "2016-08-02": merged.dates["2026-07-31"], ...merged.dates },
+  };
+  assert.deepEqual(Object.keys(pruneHistoryFile(withOldDate, "2016-08-03")), ["version", "base", "checkedThrough", "updatedAt", "dates"]);
+  assert.equal(pruneHistoryFile(withOldDate, "2016-08-03").dates["2016-08-02"], undefined);
+});
+
+test("exchange history file windows are continuous, non-overlapping, and at most one year", async () => {
+  const { historyWindows } = await load("app/api/exchange-rates/history-file.ts");
+  const windows = historyWindows("2016-08-03", "2026-08-02");
+
+  assert.equal(windows[0].from, "2016-08-03");
+  assert.equal(windows.at(-1).to, "2026-08-02");
+  for (let index = 0; index < windows.length; index += 1) {
+    const window = windows[index];
+    const durationDays = (Date.parse(window.to) - Date.parse(window.from)) / 86400000;
+    assert.ok(durationDays <= 365, `${window.from}..${window.to} exceeds one year`);
+    if (index > 0) {
+      const previous = windows[index - 1];
+      assert.equal(Date.parse(window.from) - Date.parse(previous.to), 86400000);
+    }
+  }
+});
+
 test("latest exchange rates require all supported currencies from one date", async () => {
   const { readLatestExchangeRates } = await load("db/exchange-rate-history.ts");
   const db = createExchangeRateHistoryDb();
