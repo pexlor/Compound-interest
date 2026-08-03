@@ -38,7 +38,7 @@ type HistoryEntry = {
   id: number;
   snapshot_date: string;
   total_cny: number;
-  trigger: "asset_change" | "exchange_refresh";
+  trigger: "asset_change" | "exchange_refresh" | "scheduled_daily";
   rate_date: string | null;
 };
 

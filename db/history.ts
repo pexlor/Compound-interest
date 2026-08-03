@@ -1,4 +1,4 @@
-export type SnapshotTrigger = "asset_change" | "exchange_refresh";
+export type SnapshotTrigger = "asset_change" | "exchange_refresh" | "scheduled_daily";
 
 export type HistoryRow = {
   id: number;

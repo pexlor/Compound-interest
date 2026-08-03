@@ -3,6 +3,7 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { createExchangeRateHistorySync } from "../app/api/exchange-rates/history-sync";
 import { prewarmMarketReturns } from "../app/api/market/prewarm";
+import { runDailyAssetSnapshot } from "../app/api/history/daily-snapshot";
 import { initializeAssetsDb } from "../db/assets";
 import { createWorkerLifecycle } from "./lifecycle";
 
@@ -73,6 +74,9 @@ const worker = createWorkerLifecycle<Env, ExecutionContext>({
     }
     if (controller.cron === "10 20 * * *") {
       return prewarmMarketReturns(env.DB, (input, init) => fetch(input, init));
+    }
+    if (controller.cron === "58 3 * * *") {
+      return initializeAssetsDb(env.DB).then(() => runDailyAssetSnapshot(env.DB, (input, init) => fetch(input, init)));
     }
     return Promise.resolve();
   },

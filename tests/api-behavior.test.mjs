@@ -682,6 +682,7 @@ test("Worker lifecycle starts exchange then market once without blocking and for
     scheduled: async (controller) => {
       if (controller.cron === "0 16 * * *") order.push("exchange-cron");
       if (controller.cron === "10 20 * * *") order.push("market-cron");
+      if (controller.cron === "58 3 * * *") order.push("snapshot-cron");
     },
     logger: captureLogger().logger,
   });
@@ -701,7 +702,9 @@ test("Worker lifecycle starts exchange then market once without blocking and for
   await waits.at(-1);
   lifecycle.scheduled({ cron: "10 20 * * *" }, {}, context);
   await waits.at(-1);
-  assert.deepEqual(order, ["exchange", "market", "exchange-cron", "market-cron"]);
+  lifecycle.scheduled({ cron: "58 3 * * *" }, {}, context);
+  await waits.at(-1);
+  assert.deepEqual(order, ["exchange", "market", "exchange-cron", "market-cron", "snapshot-cron"]);
 });
 
 test("daily asset snapshot uses complete rates and overwrites the same date", async () => {
@@ -720,6 +723,54 @@ test("daily asset snapshot uses complete rates and overwrites the same date", as
   assert.equal(second.total_cny, 25000);
   assert.equal(second.trigger, "exchange_refresh");
   assert.equal(db.history.size, 1);
+});
+
+test("11:58 daily job refreshes quantity-based values and records each user's snapshot", async () => {
+  const { createDailyAssetSnapshotService } = await load("app/api/history/daily-snapshot.ts");
+  const assets = [
+    { id: 1, user_id: 1, category: "stock", code: "600519", amount: 10000, quantity: 2.5, currency: "CNY" },
+    { id: 2, user_id: 1, category: "stock", code: "600519", amount: 20000, quantity: 1, currency: "CNY" },
+    { id: 3, user_id: 2, category: "deposit", code: null, amount: 50000, quantity: null, currency: "CNY" },
+  ];
+  const statements = [];
+  const statement = (sql, values = []) => ({
+    sql, values,
+    bind(...nextValues) { return statement(sql, nextValues); },
+    async all() { return { results: assets }; },
+  });
+  const db = {
+    prepare(sql) { return statement(sql); },
+    async batch(batch) {
+      for (const item of batch) {
+        statements.push(item);
+        const [amount, currency, id, userId] = item.values;
+        const asset = assets.find((row) => row.id === id && row.user_id === userId);
+        asset.amount = amount;
+        asset.currency = currency;
+      }
+    },
+  };
+  const quotes = [];
+  const snapshots = [];
+  const run = createDailyAssetSnapshotService({
+    db,
+    quote: async (...args) => {
+      quotes.push(args);
+      return { currentPrice: 100, priceCurrency: "CNY", priceDate: "2026-08-03 11:58" };
+    },
+    snapshot: async (...args) => {
+      snapshots.push(args);
+      return { snapshot_date: "2026-08-03" };
+    },
+    now: () => new Date("2026-08-03T03:58:00Z"),
+  });
+  const summary = await run();
+  assert.equal(quotes.length, 1);
+  assert.equal(statements.length, 2);
+  assert.equal(assets[0].amount, 25000);
+  assert.equal(assets[1].amount, 10000);
+  assert.deepEqual(snapshots.map((call) => call.slice(1, 3)), [[1, "scheduled_daily"], [2, "scheduled_daily"]]);
+  assert.deepEqual(summary, { users: 2, updatedAssets: 2, recordedSnapshots: 2, errors: [] });
 });
 
 test("history API authenticates, isolates users, clamps limits, and returns ascending dates", async () => {

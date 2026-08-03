@@ -141,18 +141,23 @@ test("market returns load in one batch and show limited-history details", async 
   assert.doesNotMatch(dashboard, /Promise\.all\(assets\.map\(async \(asset\)/);
 });
 
-test("Worker config binds R2 and separates midnight exchange sync from 04:10 market prewarm", async () => {
-  const [viteConfig, worker, hosting] = await Promise.all([
+test("Worker config binds R2 and separates exchange sync, market prewarm, and the 11:58 snapshot", async () => {
+  const [viteConfig, worker, hosting, dailySnapshot] = await Promise.all([
     read("vite.config.ts"),
     read("worker/index.ts"),
     read(".openai/hosting.json"),
+    read("app/api/history/daily-snapshot.ts"),
   ]);
-  assert.match(viteConfig, /crons:\s*\["0 16 \* \* \*",\s*"10 20 \* \* \*"\]/);
+  assert.match(viteConfig, /crons:\s*\["0 16 \* \* \*",\s*"10 20 \* \* \*",\s*"58 3 \* \* \*"\]/);
   assert.match(hosting, /"r2":\s*"RATES"/);
   assert.match(worker, /createWorkerLifecycle/);
   assert.match(worker, /RATES:\s*R2Bucket/);
   assert.match(worker, /createExchangeRateHistorySync/);
   assert.match(worker, /controller\.cron === "0 16 \* \* \*"/);
   assert.match(worker, /controller\.cron === "10 20 \* \* \*"/);
+  assert.match(worker, /controller\.cron === "58 3 \* \* \*"/);
   assert.match(worker, /prewarmMarketReturns/);
+  assert.match(worker, /runDailyAssetSnapshot/);
+  assert.match(dailySnapshot, /scheduled_daily/);
+  assert.match(dailySnapshot, /quantity.*currentPrice.*100/);
 });
