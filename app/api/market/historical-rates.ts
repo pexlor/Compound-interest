@@ -17,8 +17,11 @@ export async function fetchHistoricalUsdCnyRate(
     try {
       response = await fetcher(endpoint.toString());
       break;
-    } catch {
-      if (attempt === 1) throw new Error("美元人民币历史汇率服务暂不可用");
+    } catch (error) {
+      const errorName = error instanceof Error ? error.name : "";
+      if (errorName === "TimeoutError" || errorName === "AbortError" || attempt === 1) {
+        throw new Error("美元人民币历史汇率服务暂不可用");
+      }
     }
   }
   if (!response?.ok) throw new Error("美元人民币历史汇率服务暂不可用");

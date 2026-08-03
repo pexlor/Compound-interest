@@ -76,16 +76,17 @@ function createLimiter(limit: number) {
 
 export function createMarketHandler(dependencies: Dependencies) {
   const timeoutMs = dependencies.timeoutMs ?? 8000;
+  const historicalTimeoutMs = Math.min(timeoutMs, 4000);
   const now = dependencies.now ?? Date.now;
   const cacheTtlMs = dependencies.cacheTtlMs ?? 10 * 60 * 1000;
   const runLimited = createLimiter(Math.max(1, dependencies.maxConcurrent ?? 4));
   const cache = new Map<string, { expiresAt: number; value: MarketResult }>();
   const inFlight = new Map<string, Promise<MarketResult>>();
 
-  async function upstreamFetch(url: string) {
+  async function upstreamFetch(url: string, requestTimeoutMs = timeoutMs) {
     return runLimited(async () => {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(new DOMException("行情请求超时", "TimeoutError")), timeoutMs);
+      const timer = setTimeout(() => controller.abort(new DOMException("行情请求超时", "TimeoutError")), requestTimeoutMs);
       try {
         return await dependencies.fetch(url, {
           headers: { "User-Agent": "Mozilla/5.0", Referer: "https://fundf10.eastmoney.com/" },
@@ -158,8 +159,9 @@ export function createMarketHandler(dependencies: Dependencies) {
     let start = Number(first[2]);
     let end = Number(last[2]);
     if (isUsSecurity) {
-      const startRate = await fetchHistoricalUsdCnyRate((url) => upstreamFetch(url), String(first[0]));
-      const endRate = await fetchHistoricalUsdCnyRate((url) => upstreamFetch(url), String(last[0]));
+      const historicalFetch = (url: string) => upstreamFetch(url, historicalTimeoutMs);
+      const startRate = await fetchHistoricalUsdCnyRate(historicalFetch, String(first[0]));
+      const endRate = await fetchHistoricalUsdCnyRate(historicalFetch, String(last[0]));
       start *= startRate.rate;
       end *= endRate.rate;
     }

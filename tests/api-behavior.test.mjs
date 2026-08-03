@@ -340,6 +340,19 @@ test("historical USD/CNY rate retries one transient network failure", async () =
   assert.deepEqual(result, { date: "2025-07-31", rate: 7.2 });
 });
 
+test("historical USD/CNY rate does not retry a timeout", async () => {
+  const { fetchHistoricalUsdCnyRate } = await load("app/api/market/historical-rates.ts");
+  let attempts = 0;
+  await assert.rejects(
+    fetchHistoricalUsdCnyRate(async () => {
+      attempts += 1;
+      throw new DOMException("timeout", "TimeoutError");
+    }, "2025-07-31"),
+    /美元人民币历史汇率服务暂不可用/,
+  );
+  assert.equal(attempts, 1);
+});
+
 test("market API authenticates, targets the requested lookback, and caches", async () => {
   const { createMarketHandler } = await load("app/api/market/handler.ts");
   let active = 0;
