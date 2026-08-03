@@ -172,7 +172,7 @@ export const LOOKBACK_DAYS = [365, 1095, 1825, 3650] as const;
 export type MarketReturnError = { category: string; code: string; lookbackDays: number; error: string };
 export function createMarketReturnService(dependencies: {
   db: D1Database; calculate(category: string, code: string, days: number): Promise<MarketCalculation>;
-  now?: () => Date; concurrency?: number;
+  now?: () => Date; concurrency?: number; logger?: Pick<Console, "info" | "warn" | "error">;
 }) {
   return {
     get(category: string, code: string, lookbackDays: number): Promise<MarketReturnRecord>,
@@ -183,6 +183,8 @@ export function createMarketReturnService(dependencies: {
 ```
 
 `get` 依次执行当天查询、计算与保存、失败后最近缓存回退。`getForUser` 查询当前用户资产并去重；`prewarmAll` 查询全库不重复键，并使用固定并发队列隔离失败。
+
+使用 `[market-return]` 前缀输出 `cache_hit`、`cache_miss`、`calculate_success`、`stale_fallback`、`calculate_failed`、`prewarm_start` 和 `prewarm_complete`。日志只包含类别、代码、区间、日期、实际天数、耗时和批次计数；测试注入 logger 并断言关键事件存在。
 
 - [ ] **步骤 4：运行服务测试并确认通过**
 
