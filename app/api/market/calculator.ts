@@ -236,7 +236,7 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
       historyLimited,
       startDate: String(first[0]),
       endDate: String(last[0]),
-      source: "腾讯证券历史复权行情",
+      source: "腾讯证券前复权行情（严格复权）",
     };
   }
 

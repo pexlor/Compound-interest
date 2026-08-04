@@ -619,7 +619,7 @@ test("market return read-through logs cache hits and fills daily misses", async 
   assert.ok(events.some((event) => event[2]?.event === "calculate_success"));
 });
 
-test("legacy unadjusted US returns are recalculated instead of served from cache", async () => {
+test("legacy stock returns are recalculated instead of served from cache", async () => {
   const { saveMarketReturn } = await load("db/market-returns.ts");
   const { createMarketReturnService } = await load("app/api/market/market-return-service.ts");
   const db = createMarketReturnDb();
@@ -641,6 +641,15 @@ test("legacy unadjusted US returns are recalculated instead of served from cache
   assert.equal(calculatorCalls, 1);
   assert.equal(result.annualRate, 25.5);
   assert.match(result.source, /复权收盘价/);
+
+  await saveMarketReturn(db, sampleMarketReturn({
+    code: "600519",
+    annualRate: 3,
+    source: "腾讯证券历史复权行情",
+  }));
+  const domestic = await service.get("stock", "600519", 1095);
+  assert.equal(calculatorCalls, 2);
+  assert.equal(domestic.annualRate, 25.5);
 });
 
 test("market return read-through falls back to stale cache and logs the reason", async () => {

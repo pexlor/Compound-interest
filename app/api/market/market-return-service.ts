@@ -28,10 +28,13 @@ type Dependencies = {
 };
 
 const marketCategories = new Set(["stock", "fund", "money"]);
-const legacyUnadjustedUsSource = "腾讯证券美股历史行情（人民币汇率调整）";
+const legacyUnsafeStockSources = new Set([
+  "腾讯证券美股历史行情（人民币汇率调整）",
+  "腾讯证券历史复权行情",
+]);
 
-function isLegacyUnadjustedUsReturn(record: MarketReturnRecord | null) {
-  return record?.source === legacyUnadjustedUsSource;
+function isLegacyUnsafeStockReturn(record: MarketReturnRecord | null) {
+  return Boolean(record && legacyUnsafeStockSources.has(record.source));
 }
 
 function errorMessage(error: unknown) {
@@ -81,7 +84,7 @@ export function createMarketReturnService(dependencies: Dependencies) {
     const currentDate = shanghaiDate(now());
     const fields = { category, code, lookbackDays, calculationDate: currentDate };
     const cached = await findMarketReturn(dependencies.db, category, code, lookbackDays, currentDate);
-    if (cached && !isLegacyUnadjustedUsReturn(cached)) {
+    if (cached && !isLegacyUnsafeStockReturn(cached)) {
       log("info", "cache_hit", fields);
       return cached;
     }
@@ -107,7 +110,7 @@ export function createMarketReturnService(dependencies: Dependencies) {
     } catch (error) {
       const message = errorMessage(error);
       const stale = await findLatestMarketReturn(dependencies.db, category, code, lookbackDays);
-      if (stale && !isLegacyUnadjustedUsReturn(stale)) {
+      if (stale && !isLegacyUnsafeStockReturn(stale)) {
         log("warn", "stale_fallback", { ...fields, staleDate: stale.calculationDate, error: message });
         return { ...stale, stale: true };
       }
