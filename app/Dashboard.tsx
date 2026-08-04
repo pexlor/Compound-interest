@@ -41,6 +41,11 @@ type HistoryEntry = {
   trigger: "asset_change" | "exchange_refresh" | "scheduled_daily";
   rate_date: string | null;
 };
+type IncomeSettings = {
+  monthly_salary: number;
+  monthly_savings: number;
+  updated_at: string | null;
+};
 
 const categoryMeta: Record<Category, { name: string; short: string; color: string }> = {
   stock: { name: "股票", short: "股", color: "#ee6a4d" },
@@ -50,6 +55,10 @@ const categoryMeta: Record<Category, { name: string; short: string; color: strin
   housing: { name: "公积金", short: "积", color: "#5196e3" },
   fixed: { name: "固定资产", short: "固", color: "#8c98a4" },
 };
+
+const assetColors = ["#34775c", "#e4a83f", "#df7259", "#6f8fd6", "#9a76c4", "#3aa6a0", "#c985a2", "#84975a", "#c47b3d", "#70818d"];
+
+type AllocationSegment = { key: string; label: string; amount: number; color: string };
 
 const currencyMeta: Record<Currency, string> = {
   CNY: "人民币",
@@ -103,13 +112,16 @@ export default function Dashboard() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [marketRates, setMarketRates] = useState<Record<string, MarketReturnMeta>>({});
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [income, setIncome] = useState<IncomeSettings>({ monthly_salary: 0, monthly_savings: 0, updated_at: null });
   const [activeFilter, setActiveFilter] = useState<"all" | Category>("all");
+  const [allocationMode, setAllocationMode] = useState<"category" | "asset">("category");
   const [horizon, setHorizon] = useState(3);
   const [lookback, setLookback] = useState(3);
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [savingIncome, setSavingIncome] = useState(false);
   const [toast, setToast] = useState("");
   const [selected, setSelected] = useState<Asset | null>(null);
   const [exchangeRates, setExchangeRates] = useState<Partial<Record<Currency, number>>>({ CNY: 1 });
@@ -172,10 +184,16 @@ export default function Dashboard() {
         if (!response.ok) throw new Error("history");
         return response.json();
       }),
+      fetch("/api/income").then(async (response) => {
+        if (response.status === 401) throw new Error("unauthorized");
+        if (!response.ok) throw new Error("income");
+        return response.json();
+      }),
     ])
-      .then(([assetData, rateData, historyData]) => {
+      .then(([assetData, rateData, historyData, incomeData]) => {
         setAssets(assetData.assets ?? []);
         setHistory(historyData.history ?? []);
+        setIncome(incomeData.income ?? { monthly_salary: 0, monthly_savings: 0, updated_at: null });
         if (rateData) {
           setExchangeRates(rateData.rates);
           setExchangeDate(rateData.date);
@@ -227,11 +245,12 @@ export default function Dashboard() {
   }), [assets, marketRates]);
   const missingExchangeRate = displayAssets.some((asset) => !exchangeRates[asset.currency]
     || isQuantityAsset(asset) && Boolean(asset.quantity) && !asset.market_return?.currentPrice);
-  const portfolio = useMemo(() => calculatePortfolio(displayAssets, exchangeRates, horizon), [displayAssets, exchangeRates, horizon]);
+  const portfolio = useMemo(() => calculatePortfolio(displayAssets, exchangeRates, horizon, undefined, income.monthly_savings), [displayAssets, exchangeRates, horizon, income.monthly_savings]);
   const total = portfolio?.total ?? 0;
   const forecast = portfolio?.forecast ?? 0;
   const expectedGain = portfolio?.expectedGain ?? 0;
   const weightedRate = portfolio?.weightedRate ?? 0;
+  const savingsContribution = portfolio?.savingsContribution ?? 0;
 
   const grouped = useMemo(() => {
     return (Object.keys(categoryMeta) as Category[]).map((category) => ({
@@ -239,11 +258,19 @@ export default function Dashboard() {
       amount: displayAssets.filter((item) => item.category === category).reduce((sum, item) => sum + toCny(item, exchangeRates), 0),
     })).filter((item) => item.amount > 0);
   }, [displayAssets, exchangeRates]);
+  const assetAllocations = useMemo(() => displayAssets.map((asset, index) => ({
+    asset,
+    amount: toCny(asset, exchangeRates),
+    color: assetColors[index % assetColors.length],
+  })).filter((item) => item.amount > 0).sort((left, right) => right.amount - left.amount), [displayAssets, exchangeRates]);
+  const allocationSegments: AllocationSegment[] = allocationMode === "category"
+    ? grouped.map((item) => ({ key: item.category, label: categoryMeta[item.category].name, amount: item.amount, color: categoryMeta[item.category].color }))
+    : assetAllocations.map((item) => ({ key: String(item.asset.id), label: item.asset.name, amount: item.amount, color: item.color }));
 
   const filtered = activeFilter === "all" ? displayAssets : displayAssets.filter((asset) => asset.category === activeFilter);
   const limitedHistoryCount = displayAssets.filter((asset) => asset.market_return?.historyLimited).length;
   const selectedMarket = selected ? displayAssets.find((asset) => asset.id === selected.id) ?? selected : null;
-  const chartValues = Array.from({ length: horizon + 1 }, (_, index) => calculatePortfolio(displayAssets, exchangeRates, index)?.forecast ?? 0);
+  const chartValues = Array.from({ length: horizon + 1 }, (_, index) => calculatePortfolio(displayAssets, exchangeRates, index, undefined, income.monthly_savings)?.forecast ?? 0);
   const minChart = Math.min(...chartValues);
   const maxChart = Math.max(...chartValues);
 
@@ -259,6 +286,34 @@ export default function Dashboard() {
       setHistory(data.history ?? []);
     } catch {
       setToast("资产已保存，但历史走势读取失败");
+    }
+  }
+
+  async function saveIncome(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingIncome(true);
+    try {
+      const form = new FormData(event.currentTarget);
+      const response = await fetch("/api/income", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          monthlySalary: Number(form.get("monthlySalary")),
+          monthlySavings: Number(form.get("monthlySavings")),
+        }),
+      });
+      const data = await response.json();
+      if (response.status === 401) {
+        setUser(null);
+        return;
+      }
+      if (!response.ok) throw new Error(data.error || "保存工资设置失败");
+      setIncome(data.income);
+      setToast("工资与预计储蓄额已保存，未来预测已更新");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "保存工资设置失败");
+    } finally {
+      setSavingIncome(false);
     }
   }
 
@@ -412,6 +467,7 @@ export default function Dashboard() {
     setAssets([]);
     setMarketRates({});
     setHistory([]);
+    setIncome({ monthly_salary: 0, monthly_savings: 0, updated_at: null });
     setAssetsLoading(false);
     setSelected(null);
     setExchangeRates({ CNY: 1 });
@@ -464,17 +520,22 @@ export default function Dashboard() {
           </article>
 
           <article className="allocation-card">
-            <div className="card-heading"><div><span className="card-kicker">资产配置</span><h2>钱放在了哪里</h2></div><button className="text-button" onClick={() => setActiveFilter("all")}>查看全部</button></div>
+            <div className="card-heading"><div><span className="card-kicker">资产配置</span><h2>钱放在了哪里</h2></div><div className="allocation-switch" aria-label="资产配置展示方式"><button className={allocationMode === "category" ? "active" : ""} onClick={() => setAllocationMode("category")}>按类别</button><button className={allocationMode === "asset" ? "active" : ""} onClick={() => setAllocationMode("asset")}>按资产</button></div></div>
             <div className="allocation-body">
-              {!missingExchangeRate ? <div className="donut" style={{ background: total ? `conic-gradient(${grouped.map((item, index) => {
-                const before = grouped.slice(0, index).reduce((sum, group) => sum + group.amount, 0) / total * 100;
+              {!missingExchangeRate ? <div className="donut" style={{ background: total ? `conic-gradient(${allocationSegments.map((item, index) => {
+                const before = allocationSegments.slice(0, index).reduce((sum, segment) => sum + segment.amount, 0) / total * 100;
                 const after = before + item.amount / total * 100;
-                return `${categoryMeta[item.category].color} ${before}% ${after}%`;
-              }).join(",")})` : "#edf1ee" }}><div><strong>{grouped.length}</strong><span>类资产</span></div></div> : <div className="unavailable-state">等待完整汇率后显示配置</div>}
-              {!missingExchangeRate && <div className="allocation-list">
-                {grouped.slice(0, 5).map((item) => <button key={item.category} onClick={() => setActiveFilter(item.category)}>
-                  <span className="legend-dot" style={{ background: categoryMeta[item.category].color }} />
-                  <span>{categoryMeta[item.category].name}</span><strong>{(item.amount / total * 100).toFixed(1)}%</strong>
+                return `${item.color} ${before}% ${after}%`;
+              }).join(",")})` : "#edf1ee" }}>
+                <div className="donut-center"><strong>{allocationSegments.length}</strong><span>{allocationMode === "category" ? "类资产" : "项资产"}</span></div>
+              </div> : <div className="unavailable-state">等待完整汇率后显示配置</div>}
+              {!missingExchangeRate && <div className={`allocation-list${allocationMode === "asset" ? " detailed" : ""}`}>
+                {allocationSegments.map((item) => <button key={item.key} title={item.label} onClick={() => {
+                  if (allocationMode === "category") setActiveFilter(item.key as Category);
+                  else setSelected(assetAllocations.find((allocation) => String(allocation.asset.id) === item.key)?.asset ?? null);
+                  }}>
+                  <span className="legend-dot" style={{ background: item.color }} />
+                  <span>{item.label}</span><strong>{total ? (item.amount / total * 100).toFixed(1) : "0.0"}%</strong>
                 </button>)}
               </div>}
             </div>
@@ -486,7 +547,14 @@ export default function Dashboard() {
             <span className="card-kicker">未来收益推演</span>
             <h2>{horizon} 年后，预计拥有</h2>
             <div className="forecast-number">{missingExchangeRate ? "等待汇率" : money(forecast)}</div>
-            <p>按当前组合与复利计算，预计新增 <b>{missingExchangeRate ? "等待汇率" : money(expectedGain)}</b></p>
+            <p>按当前组合复利并计入储蓄，预计新增 <b>{missingExchangeRate ? "等待汇率" : money(expectedGain)}</b>{income.monthly_savings > 0 ? `（含储蓄 ${money(savingsContribution)}）` : ""}</p>
+            <form className="income-form" onSubmit={saveIncome}>
+              <div>
+                <label><span>当前月工资（人民币）</span><input name="monthlySalary" type="number" min="0" step="0.01" required defaultValue={(income.monthly_salary / 100).toFixed(2)} /></label>
+                <label><span>每月预计储蓄额</span><input name="monthlySavings" type="number" min="0" step="0.01" required defaultValue={(income.monthly_savings / 100).toFixed(2)} /></label>
+              </div>
+              <button disabled={savingIncome}>{savingIncome ? "保存中…" : "保存工资设置"}</button>
+            </form>
             <div className="control-block">
               <span>预测到未来</span>
               <div className="segmented">{[1, 3, 5, 10].map((year) => <button className={horizon === year ? "active" : ""} key={year} onClick={() => setHorizon(year)}>{year}年</button>)}</div>
@@ -497,7 +565,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="chart-wrap" aria-label={`未来 ${horizon} 年资产预测折线图`}>
-            <div className="chart-top"><span>资产增长曲线</span><span className="forecast-legend"><i /> 历史收益率外推</span></div>
+            <div className="chart-top"><span>资产增长曲线</span><span className="forecast-legend"><i /> 历史收益率外推 + 每月储蓄</span></div>
             {!missingExchangeRate ? <div className="chart">
               <span className="y-label top">{money(maxChart)}</span><span className="y-label bottom">{money(minChart)}</span>
               <div className="gridline gridline-1"/><div className="gridline gridline-2"/><div className="gridline gridline-3"/>
@@ -508,7 +576,7 @@ export default function Dashboard() {
                 })}
               </div>
             </div> : <div className="unavailable-chart">等待完整汇率后显示预测曲线</div>}
-            <p className="disclaimer">预测基于历史收益率与输入利率，外币按当前汇率不变测算，不代表实际收益或投资承诺。</p>
+            <p className="disclaimer">预测基于历史收益率与输入利率，并按预计储蓄额 × 月份计入新增资金；外币按当前汇率不变测算，不代表实际收益或投资承诺。</p>
           </div>
         </section>
 

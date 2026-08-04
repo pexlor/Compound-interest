@@ -55,10 +55,11 @@ export function calculatePortfolio(
   rates: Partial<Record<string, number>>,
   horizon: number,
   asOf = new Date(),
+  monthlySavings = 0,
 ) {
   if (assets.some((asset) => !Number.isFinite(rates[asset.currency]) || (rates[asset.currency] ?? 0) <= 0)) return null;
   const total = assets.reduce((sum, asset) => sum + asset.amount * (rates[asset.currency] ?? 0), 0);
-  const forecast = assets.reduce((sum, asset) => {
+  const investmentForecast = assets.reduce((sum, asset) => {
     const rate = asset.category === "fixed" ? 0 : asset.annual_rate / 100;
     const initial = asset.amount * (rates[asset.currency] ?? 0) * Math.pow(1 + rate, horizon);
     if (!asset.investment_strategy || asset.investment_strategy === "none" || !asset.investment_amount || asset.category !== "fund") return sum + initial;
@@ -71,8 +72,10 @@ export function calculatePortfolio(
     }, 0);
     return sum + initial + invested;
   }, 0);
+  const savingsContribution = Math.max(0, monthlySavings) * Math.max(0, horizon) * 12;
+  const forecast = investmentForecast + savingsContribution;
   const weightedRate = total
     ? assets.reduce((sum, asset) => sum + asset.amount * (rates[asset.currency] ?? 0) * (asset.category === "fixed" ? 0 : asset.annual_rate), 0) / total
     : 0;
-  return { total, forecast, expectedGain: forecast - total, weightedRate };
+  return { total, forecast, expectedGain: forecast - total, weightedRate, savingsContribution };
 }

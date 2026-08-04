@@ -1455,6 +1455,54 @@ test("fund forecasts include scheduled investments in the fund currency", async 
   assert.equal(usd.forecast, 770000);
 });
 
+test("portfolio forecasts add monthly savings for every forecast month", async () => {
+  const { calculatePortfolio } = await load("app/portfolio.ts");
+  const assets = [{ category: "deposit", amount: 100000, currency: "CNY", annual_rate: 0 }];
+  const result = calculatePortfolio(assets, { CNY: 1 }, 3, new Date("2026-01-01T00:00:00Z"), 30000);
+  assert.equal(result.total, 100000);
+  assert.equal(result.savingsContribution, 1080000);
+  assert.equal(result.forecast, 1180000);
+  assert.equal(result.expectedGain, 1080000);
+});
+
+test("income settings are private to the signed-in user and stored in cents", async () => {
+  const { createIncomeHandlers } = await load("app/api/income/handlers.ts");
+  const rows = new Map();
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...values) {
+          return {
+            async first() {
+              if (sql.startsWith("SELECT")) return rows.get(values[0]) ?? null;
+              if (sql.includes("INSERT INTO income_settings")) {
+                const row = { monthly_salary: values[1], monthly_savings: values[2], updated_at: "2026-08-04 00:00:00" };
+                rows.set(values[0], row);
+                return row;
+              }
+              throw new Error(`Unexpected income query: ${sql}`);
+            },
+          };
+        },
+      };
+    },
+  };
+  const handlers = createIncomeHandlers({
+    getAuthenticatedUser: async () => ({ id: 7 }),
+    getAssetsDb: async () => db,
+  });
+  const saved = await handlers.PUT(new Request("http://local/api/income", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ monthlySalary: 20000, monthlySavings: 8000.5 }),
+  }));
+  assert.equal(saved.status, 200);
+  assert.deepEqual((await saved.json()).income, { monthly_salary: 2000000, monthly_savings: 800050, updated_at: "2026-08-04 00:00:00" });
+
+  const read = await handlers.GET(new Request("http://local/api/income"));
+  assert.deepEqual((await read.json()).income, { monthly_salary: 2000000, monthly_savings: 800050, updated_at: "2026-08-04 00:00:00" });
+});
+
 test("exchange-rate API prefers current D1 rates without an upstream request", async () => {
   const { createExchangeRatesHandler } = await load("app/api/exchange-rates/handler.ts");
   let upstreamCalls = 0;

@@ -75,14 +75,19 @@ h2 { margin: 4px 0 0; font-family: Georgia, "Songti SC", serif; font-size: 25px;
 .card-heading, .section-heading, .chart-top { display: flex; align-items: flex-start; justify-content: space-between; }
 .card-kicker { display: block; margin-bottom: 3px; }
 .text-button { border: 0; background: transparent; color: var(--green-2); cursor: pointer; font-size: 13px; padding: 5px; }
+.allocation-switch { display: inline-flex; padding: 3px; background: #eff3ef; border-radius: 9px; }
+.allocation-switch button { border: 0; background: transparent; border-radius: 7px; padding: 6px 9px; color: #77847d; cursor: pointer; font-size: 11px; }
+.allocation-switch button.active { background: white; color: var(--green); box-shadow: 0 2px 7px rgba(43,72,58,.1); font-weight: 700; }
 .allocation-body { display: grid; grid-template-columns: 140px 1fr; align-items: center; gap: 28px; margin-top: 22px; }
-.donut { width: 138px; height: 138px; border-radius: 50%; display: grid; place-items: center; position: relative; }
-.donut::before { content: ""; width: 92px; height: 92px; background: white; border-radius: 50%; position: absolute; }
-.donut div { position: relative; display: flex; flex-direction: column; align-items: center; }
-.donut strong { font-size: 25px; }
-.donut span { font-size: 11px; color: var(--muted); }
+.donut { width: 138px; height: 138px; border-radius: 50%; position: relative; }
+.donut::before { content: ""; width: 92px; height: 92px; background: white; border-radius: 50%; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.donut-center { position: absolute; z-index: 2; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; pointer-events: none; }
+.donut-center strong { font-size: 25px; }
+.donut-center span { font-size: 11px; color: var(--muted); }
 .allocation-list { display: flex; flex-direction: column; gap: 9px; }
+.allocation-list.detailed { max-height: 146px; overflow-y: auto; padding-right: 5px; scrollbar-width: thin; scrollbar-color: #cad5ce transparent; }
 .allocation-list button { border: 0; background: transparent; display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 9px; padding: 3px 0; cursor: pointer; font-size: 12px; text-align: left; }
+.allocation-list button span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .allocation-list button:hover span:nth-child(2) { color: var(--green); }
 .allocation-list strong { font-variant-numeric: tabular-nums; }
 .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
@@ -91,6 +96,13 @@ h2 { margin: 4px 0 0; font-family: Georgia, "Songti SC", serif; font-size: 25px;
 .forecast-number { font-size: clamp(35px, 4vw, 50px); font-weight: 570; letter-spacing: -.055em; margin: 22px 0 5px; font-variant-numeric: tabular-nums; }
 .forecast-copy > p { color: var(--muted); font-size: 13px; margin: 0; }
 .forecast-copy > p b { color: var(--green); font-weight: 650; }
+.income-form { margin-top: 20px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: #f8faf8; }
+.income-form > div { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.income-form label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 10px; }
+.income-form input { width: 100%; height: 36px; border: 1px solid #dbe4de; border-radius: 8px; background: white; padding: 0 9px; color: var(--ink); outline: none; }
+.income-form input:focus { border-color: #7ba590; box-shadow: 0 0 0 3px rgba(62,124,94,.09); }
+.income-form > button { width: 100%; margin-top: 9px; min-height: 34px; border: 0; border-radius: 8px; background: var(--green); color: white; font-size: 11px; font-weight: 700; cursor: pointer; }
+.income-form > button:disabled { cursor: wait; opacity: .65; }
 .control-block { margin-top: 28px; display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--muted); }
 .segmented { display: inline-flex; padding: 3px; background: #eff3ef; border-radius: 10px; }
 .segmented button { border: 0; background: transparent; border-radius: 8px; padding: 7px 10px; color: #6d7a73; cursor: pointer; font-size: 12px; }
@@ -296,7 +308,8 @@ footer b { color: #5b6961; }
   .card-label { align-items: flex-start; gap: 14px; }
   .exchange-status { text-align: right; }
   .allocation-body { grid-template-columns: 116px 1fr; gap: 18px; }
-  .donut { width: 112px; height: 112px; }.donut::before { width: 74px; height: 74px; }
+  .donut { width: 112px; height: 112px; }
+  .donut::before { width: 74px; height: 74px; }
   .forecast-card { padding: 25px 21px; }
   .history-section { padding: 24px 18px 18px; }
   .history-heading { align-items: flex-start; gap: 12px; }

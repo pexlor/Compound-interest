@@ -59,6 +59,15 @@ export async function initializeAssetsDb(db: D1Database) {
       )
     `),
     db.prepare(`
+      CREATE TABLE IF NOT EXISTS income_settings (
+        user_id INTEGER PRIMARY KEY,
+        monthly_salary INTEGER NOT NULL DEFAULT 0,
+        monthly_savings INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `),
+    db.prepare(`
       CREATE TABLE IF NOT EXISTS exchange_rates (
         currency TEXT PRIMARY KEY,
         cny_rate REAL NOT NULL,

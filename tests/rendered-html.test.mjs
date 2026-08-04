@@ -143,6 +143,32 @@ test("portfolio annual rate explains the selected historical lookback", async ()
   assert.match(dashboard, /组合预期年化（根据最近\{lookback\}年数据计算）/);
 });
 
+test("salary and monthly savings can be saved and are included in forecasts", async () => {
+  const [dashboard, portfolio, incomeHandler, schema] = await Promise.all([
+    read("app/Dashboard.tsx"),
+    read("app/portfolio.ts"),
+    read("app/api/income/handlers.ts"),
+    read("db/schema.ts"),
+  ]);
+  assert.match(dashboard, /当前月工资（人民币）/);
+  assert.match(dashboard, /每月预计储蓄额/);
+  assert.match(dashboard, /fetch\("\/api\/income"/);
+  assert.match(portfolio, /monthlySavings.*horizon.*12/);
+  assert.match(incomeHandler, /WHERE user_id = \?/);
+  assert.match(schema, /sqliteTable\("income_settings"/);
+});
+
+test("asset allocation can switch between category and individual asset details", async () => {
+  const dashboard = await read("app/Dashboard.tsx");
+  assert.match(dashboard, /allocationMode/);
+  assert.match(dashboard, /按类别/);
+  assert.match(dashboard, /按资产/);
+  assert.match(dashboard, /assetAllocations/);
+  assert.match(dashboard, /item\.asset\.name/);
+  assert.match(dashboard, /allocation-list/);
+  assert.doesNotMatch(dashboard, /allocation-callout/);
+});
+
 test("market returns load in one batch and show limited-history details", async () => {
   const dashboard = await read("app/Dashboard.tsx");
   assert.match(dashboard, /\/api\/market\?days=\$\{selectedLookback \* 365\}/);
