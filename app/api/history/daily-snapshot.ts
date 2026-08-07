@@ -15,6 +15,7 @@ type SnapshotAsset = {
 type Dependencies = {
   db: D1Database;
   quote(category: string, code: string): Promise<MarketQuote>;
+  userId?: number;
   snapshot?: typeof recordDailySnapshot;
   now?: () => Date;
   concurrency?: number;
@@ -39,8 +40,10 @@ export function createDailyAssetSnapshotService(dependencies: Dependencies) {
   const concurrency = Math.max(1, dependencies.concurrency ?? 4);
 
   return async function calculateAndRecordDailyAssets() {
-    const result = await dependencies.db.prepare(`SELECT id, user_id, category, code, amount, quantity, currency
-      FROM assets WHERE user_id IS NOT NULL ORDER BY id`).bind().all<SnapshotAsset>();
+    const query = dependencies.userId
+      ? `SELECT id, user_id, category, code, amount, quantity, currency FROM assets WHERE user_id = ? ORDER BY id`
+      : `SELECT id, user_id, category, code, amount, quantity, currency FROM assets WHERE user_id IS NOT NULL ORDER BY id`;
+    const result = await dependencies.db.prepare(query).bind(...(dependencies.userId ? [dependencies.userId] : [])).all<SnapshotAsset>();
     const assets = result.results;
     const quotePromises = new Map<string, Promise<MarketQuote>>();
     const marketAssets = assets.filter((asset) =>
@@ -75,7 +78,7 @@ export function createDailyAssetSnapshotService(dependencies: Dependencies) {
     }
 
     const snapshotTime = now();
-    const userIds = [...new Set(assets.map((asset) => asset.user_id))];
+    const userIds = dependencies.userId ? [dependencies.userId] : [...new Set(assets.map((asset) => asset.user_id))];
     const snapshots = await mapLimited(userIds, concurrency, (userId) =>
       saveSnapshot(dependencies.db, userId, "scheduled_daily", snapshotTime)
     );
@@ -92,4 +95,9 @@ export function createDailyAssetSnapshotService(dependencies: Dependencies) {
 export function runDailyAssetSnapshot(db: D1Database, fetcher: typeof fetch) {
   const calculator = createMarketCalculator({ fetch: fetcher });
   return createDailyAssetSnapshotService({ db, quote: calculator.quote })();
+}
+
+export function runUserDailyAssetSnapshot(db: D1Database, userId: number, fetcher: typeof fetch) {
+  const calculator = createMarketCalculator({ fetch: fetcher });
+  return createDailyAssetSnapshotService({ db, userId, quote: calculator.quote })();
 }

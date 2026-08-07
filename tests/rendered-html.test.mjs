@@ -136,6 +136,8 @@ test("asset history renders a trend chart, change table, and empty state", async
   assert.match(dashboard, /history-chart/);
   assert.match(dashboard, /还没有历史记录/);
   assert.match(dashboard, /再产生一天记录后显示走势/);
+  assert.match(dashboard, /fetch\("\/api\/history", \{ method: "POST" \}\)/);
+  assert.match(dashboard, /本次打开刷新暂未完成/);
 });
 
 test("portfolio annual rate explains the selected historical lookback", async () => {

@@ -52,20 +52,25 @@ function rollingCutoff(through: string): string {
   return dateString(date);
 }
 
-function historyEntries(file: ExchangeRateHistoryFile): ExchangeRateHistoryEntry[] {
-  return Object.entries(file.dates).flatMap(([rateDate, value]) => SUPPORTED_CURRENCIES.map((currency) => ({
-    currency,
-    cnyRate: value.rates[currency],
-    rateDate,
-    source: value.source,
-    fetchedAt: file.updatedAt,
-  })));
+function historyEntries(file: ExchangeRateHistoryFile, dates?: ReadonlySet<string>): ExchangeRateHistoryEntry[] {
+  return Object.entries(file.dates)
+    .filter(([rateDate]) => !dates || dates.has(rateDate))
+    .flatMap(([rateDate, value]) => SUPPORTED_CURRENCIES.map((currency) => ({
+      currency,
+      cnyRate: value.rates[currency],
+      rateDate,
+      source: value.source,
+      fetchedAt: file.updatedAt,
+    })));
 }
 
 export function createExchangeRateHistorySync(dependencies: Dependencies) {
   const now = dependencies.now ?? (() => new Date());
   const logger = dependencies.logger ?? console;
-  const timeoutMs = dependencies.timeoutMs ?? 10_000;
+  // The history endpoint can be noticeably slower than the latest-rate API,
+  // especially on residential networks. Leave enough time for a full window
+  // response before falling back to the latest-rate provider.
+  const timeoutMs = dependencies.timeoutMs ?? 20_000;
 
   async function fetchRows(from?: string, to?: string): Promise<RateRow[]> {
     const endpoint = new URL("https://api.frankfurter.dev/v2/rates");
@@ -98,8 +103,8 @@ export function createExchangeRateHistorySync(dependencies: Dependencies) {
     return { file: parseHistoryFile(await object.text()), etag: object.etag };
   }
 
-  async function importFile(file: ExchangeRateHistoryFile, cutoffDate: string) {
-    const result = await importExchangeRateHistory(dependencies.db, historyEntries(file));
+  async function importFile(file: ExchangeRateHistoryFile, cutoffDate: string, dates?: ReadonlySet<string>) {
+    const result = await importExchangeRateHistory(dependencies.db, historyEntries(file, dates));
     await pruneExchangeRateHistory(dependencies.db, cutoffDate);
     await refreshLatestExchangeRates(dependencies.db);
     return result.inserted;
@@ -157,7 +162,12 @@ export function createExchangeRateHistorySync(dependencies: Dependencies) {
             }
           }
 
-          const inserted = await importFile(next, cutoffDate);
+          // The R2 file holds the full ten-year history. After its initial
+          // import, write only the dates returned by this synchronization.
+          const importedDates = stored.file === null
+            ? undefined
+            : new Set(rows.map((row) => row.date));
+          const inserted = await importFile(next, cutoffDate, importedDates);
           const summary = {
             checkedThrough: next.checkedThrough,
             dates: Object.keys(next.dates).length,

@@ -84,19 +84,21 @@ export async function pruneExchangeRateHistory(db: D1Database, cutoffDate: strin
 export async function refreshLatestExchangeRates(db: D1Database): Promise<void> {
   const placeholders = supportedCurrencies.map(() => "?").join(", ");
   const result = await db.prepare(`SELECT ${historyColumns} FROM exchange_rate_history
-    WHERE currency IN (${placeholders})
-    ORDER BY rate_date DESC`).bind(...supportedCurrencies).all<ExchangeRateHistoryRow>();
-  const byDate = new Map<string, Map<string, ExchangeRateHistoryRow>>();
-  for (const row of result.results) {
-    const rows = byDate.get(row.rate_date) ?? new Map<string, ExchangeRateHistoryRow>();
-    rows.set(row.currency, row);
-    byDate.set(row.rate_date, rows);
-  }
-  const latest = [...byDate.entries()]
-    .sort(([left], [right]) => right.localeCompare(left))
-    .find(([, rows]) => supportedCurrencies.every((currency) => rows.has(currency)));
-  if (!latest) return;
-  const [rateDate, rows] = latest;
+    WHERE rate_date = (
+      SELECT rate_date FROM exchange_rate_history
+      WHERE currency IN (${placeholders})
+      GROUP BY rate_date
+      HAVING COUNT(DISTINCT currency) = ?
+      ORDER BY rate_date DESC
+      LIMIT 1
+    ) AND currency IN (${placeholders})`).bind(
+      ...supportedCurrencies,
+      supportedCurrencies.length,
+      ...supportedCurrencies,
+    ).all<ExchangeRateHistoryRow>();
+  if (result.results.length !== supportedCurrencies.length) return;
+  const rows = new Map(result.results.map((row) => [row.currency, row]));
+  const rateDate = result.results[0].rate_date;
   await db.batch(supportedCurrencies.map((currency) => db.prepare(`INSERT INTO exchange_rates (
     currency, cny_rate, rate_date, updated_at
   ) VALUES (?, ?, ?, CURRENT_TIMESTAMP)

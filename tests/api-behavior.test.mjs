@@ -185,7 +185,23 @@ function createExchangeRateHistoryDb() {
     },
     async all() {
       if (sql.includes("FROM exchange_rates")) return { results: [...exchangeRates.values()] };
-      if (sql.includes("FROM exchange_rate_history")) return { results: [...rows.values()] };
+      if (sql.includes("FROM exchange_rate_history")) {
+        if (sql.includes("WHERE rate_date =")) {
+          const currencies = values.slice(0, supportedExchangeRateCurrencies.length);
+          const completeDate = [...new Set([...rows.values()]
+            .filter((row) => currencies.includes(row.currency))
+            .filter((row, _index, allRows) => allRows.filter((item) => item.rate_date === row.rate_date).length === currencies.length)
+            .map((row) => row.rate_date))]
+            .sort()
+            .at(-1);
+          return {
+            results: completeDate
+              ? [...rows.values()].filter((row) => row.rate_date === completeDate && currencies.includes(row.currency))
+              : [],
+          };
+        }
+        return { results: [...rows.values()] };
+      }
       throw new Error(`Unexpected exchange rate history all query: ${sql}`);
     },
     async run() {
@@ -804,6 +820,27 @@ test("11:58 daily job refreshes quantity-based values and records each user's sn
   assert.equal(assets[1].amount, 10000);
   assert.deepEqual(snapshots.map((call) => call.slice(1, 3)), [[1, "scheduled_daily"], [2, "scheduled_daily"]]);
   assert.deepEqual(summary, { users: 2, updatedAssets: 2, recordedSnapshots: 2, errors: [] });
+});
+
+test("opening the dashboard always refreshes the signed-in user's daily snapshot", async () => {
+  const { createDailyRefreshHandler } = await load("app/api/history/daily-refresh.ts");
+  const db = {};
+  let refreshCalls = 0;
+  const handler = createDailyRefreshHandler({
+    getAuthenticatedUser: async () => ({ id: 7 }),
+    getAssetsDb: async () => db,
+    refreshUser: async (_db, userId) => {
+      assert.equal(userId, 7);
+      refreshCalls += 1;
+      return { recordedSnapshots: 1 };
+    },
+  });
+
+  const first = await handler(new Request("http://local/api/history", { method: "POST" }));
+  assert.deepEqual(await first.json(), { refreshed: true, result: { recordedSnapshots: 1 } });
+  const second = await handler(new Request("http://local/api/history", { method: "POST" }));
+  assert.deepEqual(await second.json(), { refreshed: true, result: { recordedSnapshots: 1 } });
+  assert.equal(refreshCalls, 2);
 });
 
 test("history API authenticates, isolates users, clamps limits, and returns ascending dates", async () => {
@@ -1532,7 +1569,7 @@ test("exchange-rate API prefers current D1 rates without an upstream request", a
   assert.equal(syncCalls, 0);
 });
 
-test("exchange-rate API syncs stale D1 rates and force refresh records a snapshot", async () => {
+test("exchange-rate API syncs stale D1 rates while force refresh skips history and records a snapshot", async () => {
   const { createExchangeRatesHandler } = await load("app/api/exchange-rates/handler.ts");
   const db = { name: "db" };
   const syncOptions = [];
@@ -1540,7 +1577,7 @@ test("exchange-rate API syncs stale D1 rates and force refresh records a snapsho
   const currentDate = "2026-07-31";
   const handler = createExchangeRatesHandler({
     authenticate: async () => ({ id: 7 }),
-    fetch: async () => { throw new Error("upstream must not be called"); },
+    fetch: async () => Response.json(validRates),
     getAssetsDb: async () => db,
     readLatestRates: async () => ({
       rates: Object.fromEntries(supportedExchangeRateCurrencies.map((currency, index) => [currency, index + 1])),
@@ -1560,7 +1597,7 @@ test("exchange-rate API syncs stale D1 rates and force refresh records a snapsho
   assert.equal((await (await handler(new Request("http://local/api/exchange-rates"))).json()).date, "2026-07-31");
   assert.deepEqual(syncOptions, [{}]);
   const forced = await handler(new Request("http://local/api/exchange-rates?refresh=1"));
-  assert.deepEqual(syncOptions, [{}, { forceLatest: true }]);
+  assert.deepEqual(syncOptions, [{}]);
   assert.deepEqual(snapshots[0], [db, 7, "exchange_refresh"]);
   assert.equal((await forced.json()).snapshot.snapshot_date, "2026-08-03");
 });
@@ -1599,6 +1636,32 @@ test("exchange-rate API uses the backup provider when Frankfurter is unavailable
   const payload = await response.json();
   assert.equal(payload.source, "ExchangeRate-API 备用汇率");
   assert.equal(payload.rates.CNY, 1);
+});
+
+test("exchange-rate API tries the backup provider after history sync fails", async () => {
+  const { createExchangeRatesHandler } = await load("app/api/exchange-rates/handler.ts");
+  const db = { name: "db" };
+  const fetch = async (url) => {
+    if (String(url).includes("frankfurter")) return new Response("down", { status: 503 });
+    return Response.json({ base: "CNY", date: "2026-08-03", rates: Object.fromEntries(validRates.map((row) => [row.quote, 1 / row.rate])) });
+  };
+  const handler = createExchangeRatesHandler({
+    authenticate: async () => ({ id: 1 }),
+    fetch,
+    getAssetsDb: async () => db,
+    readLatestRates: async () => ({
+      rates: Object.fromEntries(supportedExchangeRateCurrencies.map((currency, index) => [currency, index + 1])),
+      date: "2026-08-02",
+    }),
+    syncHistory: async () => { throw new Error("history upstream down"); },
+    now: () => Date.parse("2026-08-03T12:00:00.000Z"),
+  });
+
+  const response = await handler(new Request("http://local/api/exchange-rates?refresh=1"));
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.source, "ExchangeRate-API 备用汇率");
+  assert.equal(payload.stale, undefined);
 });
 
 test("manual exchange-rate refresh saves rates and records a snapshot", async () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { calculatePortfolio } from "./portfolio";
 
 type Category = "stock" | "fund" | "money" | "deposit" | "housing" | "fixed";
@@ -106,6 +106,7 @@ const supportsInvestment = (asset: Pick<Asset, "category">) => asset.category ==
 const marketKey = (category: string, code: string) => `${category}:${code.trim().toUpperCase()}`;
 
 export default function Dashboard() {
+  const refreshOpenedForUser = useRef<number | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [assetsLoading, setAssetsLoading] = useState(false);
@@ -169,7 +170,21 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!user) return;
-    Promise.all([
+    if (refreshOpenedForUser.current === user.id) return;
+    refreshOpenedForUser.current = user.id;
+    fetch("/api/history", { method: "POST" })
+      .then(async (response) => {
+        if (response.status === 401) throw new Error("unauthorized");
+        if (!response.ok) {
+          const data = await response.json() as { error?: string };
+          throw new Error(data.error || "daily-refresh");
+        }
+      })
+      .catch((error) => {
+        if (error instanceof Error && error.message === "unauthorized") throw error;
+        setToast("本次打开刷新暂未完成，重新打开会自动重试");
+      })
+      .then(() => Promise.all([
       fetch("/api/assets").then(async (response) => {
         if (response.status === 401) throw new Error("unauthorized");
         if (!response.ok) throw new Error("assets");
@@ -189,7 +204,7 @@ export default function Dashboard() {
         if (!response.ok) throw new Error("income");
         return response.json();
       }),
-    ])
+    ]))
       .then(([assetData, rateData, historyData, incomeData]) => {
         setAssets(assetData.assets ?? []);
         setHistory(historyData.history ?? []);
@@ -468,6 +483,7 @@ export default function Dashboard() {
     setMarketRates({});
     setHistory([]);
     setIncome({ monthly_salary: 0, monthly_savings: 0, updated_at: null });
+    refreshOpenedForUser.current = null;
     setAssetsLoading(false);
     setSelected(null);
     setExchangeRates({ CNY: 1 });

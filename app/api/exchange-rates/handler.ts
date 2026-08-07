@@ -19,7 +19,7 @@ type Dependencies = {
 export function createExchangeRatesHandler(dependencies: Dependencies) {
   const now = dependencies.now ?? Date.now;
   const cacheTtlMs = dependencies.cacheTtlMs ?? 15 * 60 * 1000;
-  const timeoutMs = dependencies.timeoutMs ?? 5000;
+  const timeoutMs = dependencies.timeoutMs ?? 3000;
   let cache: (RatesPayload & { expiresAt: number }) | null = null;
   let historyCheckedThrough: string | null = null;
 
@@ -85,22 +85,19 @@ export function createExchangeRatesHandler(dependencies: Dependencies) {
     const user = await dependencies.authenticate(request);
     if (!user) return Response.json({ error: "请先登录" }, { status: 401 });
     const force = new URL(request.url).searchParams.get("refresh") === "1";
+    let staleRates: RatesPayload | null = null;
     if (dependencies.getAssetsDb && dependencies.readLatestRates && dependencies.syncHistory) {
       let latest: StoredRates | null = null;
       try {
         const db = await dependencies.getAssetsDb();
         latest = await dependencies.readLatestRates(db);
         const currentUtcDate = new Date(now()).toISOString().slice(0, 10);
-        if (force || ((!latest || latest.date < currentUtcDate) && historyCheckedThrough !== currentUtcDate)) {
-          await dependencies.syncHistory(db, force ? { forceLatest: true } : {});
+        if (!force && ((!latest || latest.date < currentUtcDate) && historyCheckedThrough !== currentUtcDate)) {
+          await dependencies.syncHistory(db);
           historyCheckedThrough = currentUtcDate;
           latest = await dependencies.readLatestRates(db);
         }
-        if (latest) {
-          let snapshot: unknown = null;
-          if (force && dependencies.recordDailySnapshot) {
-            snapshot = await dependencies.recordDailySnapshot(db, user.id, "exchange_refresh");
-          }
+        if (latest && !force) {
           const payload: RatesPayload = {
             rates: { CNY: 1, ...latest.rates },
             date: latest.date,
@@ -108,23 +105,26 @@ export function createExchangeRatesHandler(dependencies: Dependencies) {
             fetchedAt: new Date(now()).toISOString(),
           };
           cache = { ...payload, expiresAt: now() + cacheTtlMs };
-          return Response.json({ ...payload, cached: true, snapshot });
+          return Response.json({ ...payload, cached: true, snapshot: null });
         }
       } catch (error) {
         if (latest) {
-          return Response.json({
+          staleRates = {
             rates: { CNY: 1, ...latest.rates },
             date: latest.date,
             source: "本地历史汇率数据库",
             fetchedAt: new Date(now()).toISOString(),
-            cached: true,
-            stale: true,
+          };
+          console.warn("[exchange-rate-history]", {
+            event: "sync_fallback",
+            message: error instanceof Error ? error.message : String(error),
+          });
+        } else {
+          console.warn("[exchange-rate-history]", {
+            event: "read_fallback",
+            message: error instanceof Error ? error.message : String(error),
           });
         }
-        console.warn("[exchange-rate-history]", {
-          event: "read_fallback",
-          message: error instanceof Error ? error.message : String(error),
-        });
       }
     }
     if (!force && cache && cache.expiresAt > now()) return Response.json({ ...cache, expiresAt: undefined, cached: true });
@@ -142,6 +142,7 @@ export function createExchangeRatesHandler(dependencies: Dependencies) {
       return Response.json({ ...payload, cached: false, snapshot });
     } catch (error) {
       if (cache) return Response.json({ ...cache, expiresAt: undefined, cached: true, stale: true });
+      if (staleRates) return Response.json({ ...staleRates, cached: true, stale: true });
       return Response.json({ error: error instanceof Error ? error.message : "读取最新汇率失败" }, { status: 502 });
     }
   };
