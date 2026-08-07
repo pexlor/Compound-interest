@@ -140,6 +140,12 @@ test("asset history renders a trend chart, change table, and empty state", async
   assert.match(dashboard, /本次打开刷新暂未完成/);
 });
 
+test("dashboard starts data reads without waiting for the daily snapshot", async () => {
+  const dashboard = await read("app/Dashboard.tsx");
+  assert.match(dashboard, /void fetch\("\/api\/history", \{ method: "POST" \}\)/);
+  assert.doesNotMatch(dashboard, /\.then\(\(\) => Promise\.all\(\[/);
+});
+
 test("portfolio annual rate explains the selected historical lookback", async () => {
   const dashboard = await read("app/Dashboard.tsx");
   assert.match(dashboard, /组合预期年化（根据最近\{lookback\}年数据计算）/);

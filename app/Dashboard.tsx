@@ -172,7 +172,7 @@ export default function Dashboard() {
     if (!user) return;
     if (refreshOpenedForUser.current === user.id) return;
     refreshOpenedForUser.current = user.id;
-    fetch("/api/history", { method: "POST" })
+    void fetch("/api/history", { method: "POST" })
       .then(async (response) => {
         if (response.status === 401) throw new Error("unauthorized");
         if (!response.ok) {
@@ -181,10 +181,13 @@ export default function Dashboard() {
         }
       })
       .catch((error) => {
-        if (error instanceof Error && error.message === "unauthorized") throw error;
+        if (error instanceof Error && error.message === "unauthorized") {
+          setUser(null);
+          return;
+        }
         setToast("本次打开刷新暂未完成，重新打开会自动重试");
-      })
-      .then(() => Promise.all([
+      });
+    void Promise.all([
       fetch("/api/assets").then(async (response) => {
         if (response.status === 401) throw new Error("unauthorized");
         if (!response.ok) throw new Error("assets");
@@ -204,7 +207,7 @@ export default function Dashboard() {
         if (!response.ok) throw new Error("income");
         return response.json();
       }),
-    ]))
+    ])
       .then(([assetData, rateData, historyData, incomeData]) => {
         setAssets(assetData.assets ?? []);
         setHistory(historyData.history ?? []);
