@@ -166,6 +166,16 @@ test("salary and monthly savings can be saved and are included in forecasts", as
   assert.match(schema, /sqliteTable\("income_settings"/);
 });
 
+test("dashboard uses one prepared portfolio series for the forecast chart", async () => {
+  const [dashboard, portfolio] = await Promise.all([
+    read("app/Dashboard.tsx"),
+    read("app/portfolio.ts"),
+  ]);
+  assert.match(dashboard, /calculatePortfolioSeries/);
+  assert.match(dashboard, /useMemo\(\(\) => calculatePortfolioSeries/);
+  assert.match(portfolio, /export function calculatePortfolioSeries/);
+});
+
 test("asset allocation can switch between category and individual asset details", async () => {
   const dashboard = await read("app/Dashboard.tsx");
   assert.match(dashboard, /allocationMode/);

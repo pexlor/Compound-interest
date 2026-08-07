@@ -1480,7 +1480,7 @@ test("portfolio totals are unavailable instead of partial when an exchange rate 
 });
 
 test("fund forecasts include scheduled investments in the fund currency", async () => {
-  const { calculatePortfolio } = await load("app/portfolio.ts");
+  const { calculatePortfolio, calculatePortfolioSeries } = await load("app/portfolio.ts");
   const asOf = new Date("2026-01-01T12:00:00Z");
   const base = { category: "fund", code: "510300", amount: 100000, currency: "CNY", annual_rate: 0, investment_amount: 10000 };
   const monthly = calculatePortfolio([{ ...base, investment_strategy: "monthly" }], { CNY: 1 }, 1, asOf);
@@ -1490,6 +1490,12 @@ test("fund forecasts include scheduled investments in the fund currency", async 
 
   const usd = calculatePortfolio([{ ...base, code: "QQQ", currency: "USD", investment_strategy: "yearly" }], { USD: 7 }, 1, asOf);
   assert.equal(usd.forecast, 770000);
+
+  const series = calculatePortfolioSeries([{ ...base, investment_strategy: "daily" }], { CNY: 1 }, 3, asOf);
+  assert.deepEqual(
+    series.map((item) => item.forecast),
+    [0, 1, 2, 3].map((horizon) => calculatePortfolio([{ ...base, investment_strategy: "daily" }], { CNY: 1 }, horizon, asOf).forecast),
+  );
 });
 
 test("portfolio forecasts add monthly savings for every forecast month", async () => {

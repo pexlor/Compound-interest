@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { calculatePortfolio } from "./portfolio";
+import { calculatePortfolio, calculatePortfolioSeries } from "./portfolio";
 
 type Category = "stock" | "fund" | "money" | "deposit" | "housing" | "fixed";
 type Currency = "CNY" | "USD" | "HKD" | "EUR" | "JPY" | "GBP" | "SGD" | "AUD" | "CAD" | "CHF";
@@ -288,7 +288,7 @@ export default function Dashboard() {
   const filtered = activeFilter === "all" ? displayAssets : displayAssets.filter((asset) => asset.category === activeFilter);
   const limitedHistoryCount = displayAssets.filter((asset) => asset.market_return?.historyLimited).length;
   const selectedMarket = selected ? displayAssets.find((asset) => asset.id === selected.id) ?? selected : null;
-  const chartValues = Array.from({ length: horizon + 1 }, (_, index) => calculatePortfolio(displayAssets, exchangeRates, index, undefined, income.monthly_savings)?.forecast ?? 0);
+  const chartValues = useMemo(() => calculatePortfolioSeries(displayAssets, exchangeRates, horizon, undefined, income.monthly_savings)?.map((item) => item.forecast) ?? [], [displayAssets, exchangeRates, horizon, income.monthly_savings]);
   const minChart = Math.min(...chartValues);
   const maxChart = Math.max(...chartValues);
 
