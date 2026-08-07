@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { calculatePortfolio, calculatePortfolioSeries } from "./portfolio";
 
 type Category = "stock" | "fund" | "money" | "deposit" | "housing" | "fixed";
@@ -267,7 +267,8 @@ export default function Dashboard() {
   }), [assets, marketRates]);
   const missingExchangeRate = displayAssets.some((asset) => !exchangeRates[asset.currency]
     || isQuantityAsset(asset) && Boolean(asset.quantity) && !asset.market_return?.currentPrice);
-  const portfolio = useMemo(() => calculatePortfolio(displayAssets, exchangeRates, horizon, undefined, income.monthly_savings), [displayAssets, exchangeRates, horizon, income.monthly_savings]);
+  const portfolioSeries = useMemo(() => calculatePortfolioSeries(displayAssets, exchangeRates, horizon, undefined, income.monthly_savings), [displayAssets, exchangeRates, horizon, income.monthly_savings]);
+  const portfolio = portfolioSeries?.at(-1) ?? null;
   const total = portfolio?.total ?? 0;
   const forecast = portfolio?.forecast ?? 0;
   const expectedGain = portfolio?.expectedGain ?? 0;
@@ -288,11 +289,19 @@ export default function Dashboard() {
   const allocationSegments: AllocationSegment[] = allocationMode === "category"
     ? grouped.map((item) => ({ key: item.category, label: categoryMeta[item.category].name, amount: item.amount, color: categoryMeta[item.category].color }))
     : assetAllocations.map((item) => ({ key: String(item.asset.id), label: item.asset.name, amount: item.amount, color: item.color }));
+  let allocationBefore = 0;
+  const allocationGradient = total
+    ? `conic-gradient(${allocationSegments.map((item) => {
+      const start = allocationBefore / total * 100;
+      allocationBefore += item.amount;
+      return `${item.color} ${start}% ${allocationBefore / total * 100}%`;
+    }).join(",")})`
+    : "#edf1ee";
 
   const filtered = activeFilter === "all" ? displayAssets : displayAssets.filter((asset) => asset.category === activeFilter);
   const limitedHistoryCount = displayAssets.filter((asset) => asset.market_return?.historyLimited).length;
   const selectedMarket = selected ? displayAssets.find((asset) => asset.id === selected.id) ?? selected : null;
-  const chartValues = useMemo(() => calculatePortfolioSeries(displayAssets, exchangeRates, horizon, undefined, income.monthly_savings)?.map((item) => item.forecast) ?? [], [displayAssets, exchangeRates, horizon, income.monthly_savings]);
+  const chartValues = portfolioSeries?.map((item) => item.forecast) ?? [];
   const minChart = Math.min(...chartValues);
   const maxChart = Math.max(...chartValues);
 
@@ -545,11 +554,7 @@ export default function Dashboard() {
           <article className="allocation-card">
             <div className="card-heading"><div><span className="card-kicker">资产配置</span><h2>钱放在了哪里</h2></div><div className="allocation-switch" aria-label="资产配置展示方式"><button className={allocationMode === "category" ? "active" : ""} onClick={() => setAllocationMode("category")}>按类别</button><button className={allocationMode === "asset" ? "active" : ""} onClick={() => setAllocationMode("asset")}>按资产</button></div></div>
             <div className="allocation-body">
-              {!missingExchangeRate ? <div className="donut" style={{ background: total ? `conic-gradient(${allocationSegments.map((item, index) => {
-                const before = allocationSegments.slice(0, index).reduce((sum, segment) => sum + segment.amount, 0) / total * 100;
-                const after = before + item.amount / total * 100;
-                return `${item.color} ${before}% ${after}%`;
-              }).join(",")})` : "#edf1ee" }}>
+              {!missingExchangeRate ? <div className="donut" style={{ background: allocationGradient }}>
                 <div className="donut-center"><strong>{allocationSegments.length}</strong><span>{allocationMode === "category" ? "类资产" : "项资产"}</span></div>
               </div> : <div className="unavailable-state">等待完整汇率后显示配置</div>}
               {!missingExchangeRate && <div className={`allocation-list${allocationMode === "asset" ? " detailed" : ""}`}>
@@ -675,34 +680,37 @@ function EditableInvestmentFields({ asset }: { asset: Asset }) {
 
 const HISTORY_PAGE_SIZE = 90;
 
-function HistorySection({ history }: { history: HistoryEntry[] }) {
+const HistorySection = memo(function HistorySection({ history }: { history: HistoryEntry[] }) {
   const [page, setPage] = useState(0);
   const pageCount = Math.max(1, Math.ceil(history.length / HISTORY_PAGE_SIZE));
   const currentPage = Math.min(page, pageCount - 1);
   const pageEnd = history.length - currentPage * HISTORY_PAGE_SIZE;
   const pageStart = Math.max(0, pageEnd - HISTORY_PAGE_SIZE);
-  const visibleHistory = history.slice(pageStart, pageEnd);
-  const rows = visibleHistory.map((entry, index) => {
-    const previous = history[pageStart + index - 1];
-    const change = previous ? entry.total_cny - previous.total_cny : null;
-    const changeRate = previous && previous.total_cny ? (change! / previous.total_cny) * 100 : null;
-    return { ...entry, change, changeRate };
-  });
-  const chartPointCount = Math.min(300, history.length);
-  const chartHistory = history.length <= chartPointCount ? history : Array.from({ length: chartPointCount }, (_, index) => history[Math.round(index * (history.length - 1) / Math.max(1, chartPointCount - 1))]);
-  const values = history.map((entry) => entry.total_cny);
-  const min = values.length ? Math.min(...values) : 0;
-  const max = values.length ? Math.max(...values) : 0;
-  const chartWidth = 680;
-  const chartHeight = 240;
-  const paddingX = 34;
-  const paddingY = 28;
-  const points = chartHistory.map((entry, index) => {
-    const x = paddingX + index / Math.max(1, chartHistory.length - 1) * (chartWidth - paddingX * 2);
-    const y = paddingY + (max === min ? 0.5 : (max - entry.total_cny) / (max - min)) * (chartHeight - paddingY * 2);
-    return { x, y };
-  });
-  const totalChange = history.length > 1 ? history.at(-1)!.total_cny - history[0].total_cny : 0;
+  const { rows, chartHistory, min, max, points, totalChange } = useMemo(() => {
+    const visibleHistory = history.slice(pageStart, pageEnd);
+    const rows = visibleHistory.map((entry, index) => {
+      const previous = history[pageStart + index - 1];
+      const change = previous ? entry.total_cny - previous.total_cny : null;
+      const changeRate = previous && previous.total_cny ? (change! / previous.total_cny) * 100 : null;
+      return { ...entry, change, changeRate };
+    });
+    const chartPointCount = Math.min(300, history.length);
+    const chartHistory = history.length <= chartPointCount ? history : Array.from({ length: chartPointCount }, (_, index) => history[Math.round(index * (history.length - 1) / Math.max(1, chartPointCount - 1))]);
+    const values = history.map((entry) => entry.total_cny);
+    const min = values.length ? Math.min(...values) : 0;
+    const max = values.length ? Math.max(...values) : 0;
+    const chartWidth = 680;
+    const chartHeight = 240;
+    const paddingX = 34;
+    const paddingY = 28;
+    const points = chartHistory.map((entry, index) => {
+      const x = paddingX + index / Math.max(1, chartHistory.length - 1) * (chartWidth - paddingX * 2);
+      const y = paddingY + (max === min ? 0.5 : (max - entry.total_cny) / (max - min)) * (chartHeight - paddingY * 2);
+      return { x, y };
+    });
+    const totalChange = history.length > 1 ? history.at(-1)!.total_cny - history[0].total_cny : 0;
+    return { rows, chartHistory, min, max, points, totalChange };
+  }, [history, pageStart, pageEnd]);
 
   return <section className="history-section" id="history">
     <div className="section-heading history-heading">
@@ -744,7 +752,7 @@ function HistorySection({ history }: { history: HistoryEntry[] }) {
       </div>}
     </>}
   </section>;
-}
+});
 
 function AssetForm({ onSubmit, saving }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; saving: boolean }) {
   const [category, setCategory] = useState<Category>("stock");

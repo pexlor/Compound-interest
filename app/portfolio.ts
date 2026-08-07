@@ -5,6 +5,7 @@ type PortfolioAsset = {
 };
 
 const dateFormatters = new Map<string, Intl.DateTimeFormat>();
+const scheduleCache = new Map<string, Date[]>();
 
 function getDateFormatter(timeZone: string) {
   let formatter = dateFormatters.get(timeZone);
@@ -51,6 +52,16 @@ function contributionDates(start: Date, end: Date, strategy: InvestmentStrategy,
   return dates;
 }
 
+function cachedContributionDates(start: Date, end: Date, strategy: InvestmentStrategy, timeZone: string) {
+  const key = `${start.getTime()}:${end.getTime()}:${strategy}:${timeZone}`;
+  const cached = scheduleCache.get(key);
+  if (cached) return cached;
+  const dates = contributionDates(start, end, strategy, timeZone);
+  if (scheduleCache.size >= 32) scheduleCache.delete(scheduleCache.keys().next().value!);
+  scheduleCache.set(key, dates);
+  return dates;
+}
+
 type PreparedInvestment = {
   rate: number;
   initial: number;
@@ -78,7 +89,7 @@ function prepareInvestments(assets: PortfolioAsset[], rates: Partial<Record<stri
     const rate = asset.category === "fixed" ? 0 : asset.annual_rate / 100;
     const contribution = (asset.investment_amount ?? 0) * (rates[asset.currency] ?? 0);
     const dates = asset.category === "fund" && asset.investment_strategy && asset.investment_strategy !== "none" && contribution > 0
-      ? contributionDates(asOf, maxEnd, asset.investment_strategy, marketTimeZone(asset.code))
+      ? cachedContributionDates(asOf, maxEnd, asset.investment_strategy, marketTimeZone(asset.code))
       : [];
     return {
       rate,

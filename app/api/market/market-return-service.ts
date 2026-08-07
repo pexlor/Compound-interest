@@ -75,6 +75,9 @@ export function createMarketReturnService(dependencies: Dependencies) {
   const logger = dependencies.logger ?? console;
   const concurrency = Math.max(1, dependencies.concurrency ?? 4);
   const inFlight = new Map<string, Promise<MarketReturnRecord>>();
+  const quoteCache = new Map<string, { value: MarketQuote; expiresAt: number }>();
+  const quoteInFlight = new Map<string, Promise<MarketQuote>>();
+  const quoteTtlMs = 60_000;
 
   function log(level: keyof Logger, event: string, fields: Record<string, unknown>) {
     logger[level]("[market-return]", { event, ...fields });
@@ -132,7 +135,23 @@ export function createMarketReturnService(dependencies: Dependencies) {
     try {
       const marketReturn = await pending;
       if (!dependencies.quote) return marketReturn;
-      return { ...marketReturn, ...await dependencies.quote(normalizedCategory, code) };
+      const quoteKey = `${normalizedCategory}:${code}`;
+      const cachedQuote = quoteCache.get(quoteKey);
+      if (cachedQuote && cachedQuote.expiresAt > now().getTime()) {
+        return { ...marketReturn, ...cachedQuote.value };
+      }
+      let quotePending = quoteInFlight.get(quoteKey);
+      if (!quotePending) {
+        quotePending = dependencies.quote(normalizedCategory, code);
+        quoteInFlight.set(quoteKey, quotePending);
+      }
+      try {
+        const quote = await quotePending;
+        quoteCache.set(quoteKey, { value: quote, expiresAt: now().getTime() + quoteTtlMs });
+        return { ...marketReturn, ...quote };
+      } finally {
+        if (quoteInFlight.get(quoteKey) === quotePending) quoteInFlight.delete(quoteKey);
+      }
     } finally {
       inFlight.delete(key);
     }

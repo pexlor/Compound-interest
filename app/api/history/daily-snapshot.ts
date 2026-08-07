@@ -1,6 +1,7 @@
 import { recordDailySnapshot } from "../../../db/history.ts";
 import { createMarketCalculator } from "../market/calculator.ts";
 import type { MarketQuote } from "../market/calculator.ts";
+import { sharedQuoteCache } from "../market/quote-cache.ts";
 
 type SnapshotAsset = {
   id: number;
@@ -93,11 +94,11 @@ export function createDailyAssetSnapshotService(dependencies: Dependencies) {
 }
 
 export function runDailyAssetSnapshot(db: D1Database, fetcher: typeof fetch) {
-  const calculator = createMarketCalculator({ fetch: fetcher });
+  const calculator = createMarketCalculator({ fetch: fetcher, quoteCache: sharedQuoteCache });
   return createDailyAssetSnapshotService({ db, quote: calculator.quote })();
 }
 
 export function runUserDailyAssetSnapshot(db: D1Database, userId: number, fetcher: typeof fetch) {
-  const calculator = createMarketCalculator({ fetch: fetcher });
+  const calculator = createMarketCalculator({ fetch: fetcher, quoteCache: sharedQuoteCache });
   return createDailyAssetSnapshotService({ db, userId, quote: calculator.quote })();
 }

@@ -185,6 +185,35 @@ test("dashboard uses one prepared portfolio series for the forecast chart", asyn
   assert.match(portfolio, /export function calculatePortfolioSeries/);
 });
 
+test("dashboard reuses the prepared portfolio series for summary and chart", async () => {
+  const dashboard = await read("app/Dashboard.tsx");
+  assert.match(dashboard, /const portfolioSeries = useMemo\(\(\) => calculatePortfolioSeries/);
+  assert.match(dashboard, /const portfolio = portfolioSeries\?\.at\(-1\)/);
+});
+
+test("dashboard memoizes history work and builds allocation gradients linearly", async () => {
+  const dashboard = await read("app/Dashboard.tsx");
+  assert.match(dashboard, /const HistorySection = memo\(/);
+  assert.match(dashboard, /useMemo\(\(\) => \{/);
+  assert.doesNotMatch(dashboard, /allocationSegments\.slice\(0, index\)\.reduce/);
+});
+
+test("portfolio caches identical trading-day schedules", async () => {
+  const portfolio = await read("app/portfolio.ts");
+  assert.match(portfolio, /scheduleCache/);
+  assert.match(portfolio, /scheduleCache\.get\(/);
+});
+
+test("database initialization and market quotes are shared across callers", async () => {
+  const [assets, service] = await Promise.all([
+    read("db/assets.ts"),
+    read("app/api/market/market-return-service.ts"),
+  ]);
+  assert.match(assets, /initialization \?\?= initializeAssetsDb/);
+  assert.match(service, /quoteCache/);
+  assert.match(service, /quoteInFlight/);
+});
+
 test("asset allocation can switch between category and individual asset details", async () => {
   const dashboard = await read("app/Dashboard.tsx");
   assert.match(dashboard, /allocationMode/);

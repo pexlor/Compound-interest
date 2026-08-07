@@ -635,6 +635,34 @@ test("market return read-through logs cache hits and fills daily misses", async 
   assert.ok(events.some((event) => event[2]?.event === "calculate_success"));
 });
 
+test("market quote cache reuses a fresh quote and shares in-flight requests", async () => {
+  const { saveMarketReturn } = await load("db/market-returns.ts");
+  const { createMarketReturnService } = await load("app/api/market/market-return-service.ts");
+  const db = createMarketReturnDb();
+  await saveMarketReturn(db, sampleMarketReturn({ category: "stock", code: "600519" }));
+  let quoteCalls = 0;
+  let releaseQuote;
+  const service = createMarketReturnService({
+    db,
+    now: () => new Date("2026-08-03T12:00:00+08:00"),
+    calculate: async () => sampleCalculation(),
+    quote: async () => {
+      quoteCalls += 1;
+      await new Promise((resolve) => { releaseQuote = resolve; });
+      return { currentPrice: 1500, priceCurrency: "CNY", priceDate: "2026-08-03" };
+    },
+  });
+  const first = service.get("stock", "600519", 1095);
+  const second = service.get("stock", "600519", 1095);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(quoteCalls, 1);
+  releaseQuote();
+  assert.equal((await first).currentPrice, 1500);
+  assert.equal((await second).currentPrice, 1500);
+  assert.equal((await service.get("stock", "600519", 1095)).currentPrice, 1500);
+  assert.equal(quoteCalls, 1);
+});
+
 test("legacy stock returns are recalculated instead of served from cache", async () => {
   const { saveMarketReturn } = await load("db/market-returns.ts");
   const { createMarketReturnService } = await load("app/api/market/market-return-service.ts");
@@ -1393,6 +1421,25 @@ test("market calculator reads live stock prices and latest fund unit values", as
   assert.deepEqual(await calculator.quote("fund", "000001"), {
     currentPrice: 1.2345, priceCurrency: "CNY", priceDate: "2026-08-01",
   });
+});
+
+test("separate market calculators can share the live quote cache", async () => {
+  const { createMarketCalculator } = await load("app/api/market/calculator.ts");
+  const { createQuoteCache } = await load("app/api/market/quote-cache.ts");
+  let quoteCalls = 0;
+  const fetch = async (url) => {
+    const href = String(url);
+    if (href.includes("qt.gtimg.cn")) {
+      quoteCalls += 1;
+      return new Response('v_sh600519="1~stock~600519~1358.98~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~20260803154141"');
+    }
+    throw new Error(`Unexpected quote URL: ${href}`);
+  };
+  const cache = createQuoteCache();
+  const first = createMarketCalculator({ fetch, quoteCache: cache });
+  const second = createMarketCalculator({ fetch, quoteCache: cache });
+  await Promise.all([first.quote("stock", "600519"), second.quote("stock", "600519")]);
+  assert.equal(quoteCalls, 1);
 });
 
 test("QQQ live quote falls back from the exchange-suffixed symbol to the raw ticker", async () => {

@@ -1,4 +1,5 @@
 import { fetchHistoricalUsdCnyRate } from "./historical-rates.ts";
+import { createQuoteCache, readCachedQuote, type QuoteCache } from "./quote-cache.ts";
 
 type FundPoint = { FSRQ: string; DWJZ: string; LJJZ: string };
 type FundPage = {
@@ -29,6 +30,7 @@ type CalculatorDependencies = {
   historicalRate?: (marketDate: string) => Promise<{ date: string; rate: number }>;
   timeoutMs?: number;
   maxConcurrent?: number;
+  quoteCache?: QuoteCache;
 };
 
 type YahooChartPoint = { date: string; adjustedClose: number };
@@ -95,6 +97,7 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
   const timeoutMs = dependencies.timeoutMs ?? 8000;
   const historicalTimeoutMs = Math.min(timeoutMs, 4000);
   const runLimited = createLimiter(Math.max(1, dependencies.maxConcurrent ?? 4));
+  const quoteCache = dependencies.quoteCache ?? createQuoteCache();
 
   async function upstreamFetch(url: string, requestTimeoutMs = timeoutMs) {
     return runLimited(async () => {
@@ -326,16 +329,19 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
     return { currentPrice, priceCurrency: "CNY", priceDate: point.FSRQ };
   }
 
+  async function quote(category: string, code: string) {
+    return readCachedQuote(quoteCache, `${category}:${code}`, () =>
+      category === "stock" || (category === "fund" && (/^[15]/.test(code) || isUsSecurityCode(code)))
+        ? stockQuote(code)
+        : fundQuote(code));
+  }
+
   return {
     calculate(category: string, code: string, days: number) {
       return category === "stock" || (category === "fund" && (/^[15]/.test(code) || isUsSecurityCode(code)))
         ? stockReturn(code, days)
         : fundReturn(code, days, category === "money");
     },
-    quote(category: string, code: string) {
-      return category === "stock" || (category === "fund" && (/^[15]/.test(code) || isUsSecurityCode(code)))
-        ? stockQuote(code)
-        : fundQuote(code);
-    },
+    quote,
   };
 }
