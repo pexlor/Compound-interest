@@ -157,6 +157,9 @@ h2 { margin: 4px 0 0; font-family: Georgia, "Songti SC", serif; font-size: 25px;
 .history-table td { padding: 13px 10px; border-top: 1px solid #edf0ed; text-align: right; }
 .history-table tbody tr:first-child td { border-top: 0; }
 .history-table td:nth-child(2) { font-weight: 650; }
+.history-pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 16px; color: var(--muted); font-size: 12px; }
+.history-pagination button { border: 1px solid var(--line); background: white; color: var(--ink); padding: 7px 12px; border-radius: 6px; cursor: pointer; }
+.history-pagination button:disabled { color: #b5beb8; background: #f6f8f6; cursor: default; }
 
 .assets-section { margin-top: 20px; padding: 30px 32px 14px; }
 .section-heading { align-items: center; }

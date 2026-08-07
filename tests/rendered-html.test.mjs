@@ -140,6 +140,15 @@ test("asset history renders a trend chart, change table, and empty state", async
   assert.match(dashboard, /本次打开刷新暂未完成/);
 });
 
+test("asset history paginates detail rows and caps chart points", async () => {
+  const dashboard = await read("app/Dashboard.tsx");
+  assert.match(dashboard, /HISTORY_PAGE_SIZE = 90/);
+  assert.match(dashboard, /Math\.min\(300, history\.length\)/);
+  assert.match(dashboard, /numberFormatters = new Map/);
+  assert.match(dashboard, /上一页/);
+  assert.match(dashboard, /下一页/);
+});
+
 test("dashboard starts data reads without waiting for the daily snapshot", async () => {
   const dashboard = await read("app/Dashboard.tsx");
   assert.match(dashboard, /void fetch\("\/api\/history", \{ method: "POST" \}\)/);

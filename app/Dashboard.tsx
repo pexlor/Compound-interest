@@ -73,31 +73,35 @@ const currencyMeta: Record<Currency, string> = {
   CHF: "瑞士法郎",
 };
 
-const money = (cents: number, digits = 0) =>
-  new Intl.NumberFormat("zh-CN", {
-    style: "currency",
-    currency: "CNY",
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  }).format(cents / 100);
+const numberFormatters = new Map<string, Intl.NumberFormat>();
 
-const originalMoney = (cents: number, currency: Currency) =>
-  new Intl.NumberFormat("zh-CN", {
-    style: "currency",
-    currency,
-    currencyDisplay: "symbol",
-    minimumFractionDigits: currency === "JPY" ? 0 : 2,
-    maximumFractionDigits: currency === "JPY" ? 0 : 2,
-  }).format(cents / 100);
+function getNumberFormatter(key: string, options: Intl.NumberFormatOptions) {
+  let formatter = numberFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat("zh-CN", options);
+    numberFormatters.set(key, formatter);
+  }
+  return formatter;
+}
+
+const money = (cents: number, digits = 0) => getNumberFormatter(`money:${digits}`, {
+  style: "currency", currency: "CNY", minimumFractionDigits: digits, maximumFractionDigits: digits,
+}).format(cents / 100);
+
+const originalMoney = (cents: number, currency: Currency) => getNumberFormatter(`original:${currency}`, {
+  style: "currency", currency, currencyDisplay: "symbol",
+  minimumFractionDigits: currency === "JPY" ? 0 : 2,
+  maximumFractionDigits: currency === "JPY" ? 0 : 2,
+}).format(cents / 100);
 
 const toCny = (asset: Asset, rates: Partial<Record<Currency, number>>) =>
   asset.amount * (rates[asset.currency] ?? 0);
 
 const isQuantityAsset = (asset: Pick<Asset, "category">) => asset.category === "stock" || asset.category === "fund";
 
-const quantityText = (value: number) => new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 8 }).format(value);
+const quantityText = (value: number) => getNumberFormatter("quantity", { maximumFractionDigits: 8 }).format(value);
 
-const priceText = (value: number, currency: Currency) => new Intl.NumberFormat("zh-CN", {
+const priceText = (value: number, currency: Currency) => getNumberFormatter(`price:${currency}`, {
   style: "currency", currency, maximumFractionDigits: 4,
 }).format(value);
 
@@ -669,13 +673,23 @@ function EditableInvestmentFields({ asset }: { asset: Asset }) {
   </div>;
 }
 
+const HISTORY_PAGE_SIZE = 90;
+
 function HistorySection({ history }: { history: HistoryEntry[] }) {
-  const rows = history.map((entry, index) => {
-    const previous = history[index - 1];
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(history.length / HISTORY_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount - 1);
+  const pageEnd = history.length - currentPage * HISTORY_PAGE_SIZE;
+  const pageStart = Math.max(0, pageEnd - HISTORY_PAGE_SIZE);
+  const visibleHistory = history.slice(pageStart, pageEnd);
+  const rows = visibleHistory.map((entry, index) => {
+    const previous = history[pageStart + index - 1];
     const change = previous ? entry.total_cny - previous.total_cny : null;
     const changeRate = previous && previous.total_cny ? (change! / previous.total_cny) * 100 : null;
     return { ...entry, change, changeRate };
   });
+  const chartPointCount = Math.min(300, history.length);
+  const chartHistory = history.length <= chartPointCount ? history : Array.from({ length: chartPointCount }, (_, index) => history[Math.round(index * (history.length - 1) / Math.max(1, chartPointCount - 1))]);
   const values = history.map((entry) => entry.total_cny);
   const min = values.length ? Math.min(...values) : 0;
   const max = values.length ? Math.max(...values) : 0;
@@ -683,8 +697,8 @@ function HistorySection({ history }: { history: HistoryEntry[] }) {
   const chartHeight = 240;
   const paddingX = 34;
   const paddingY = 28;
-  const points = history.map((entry, index) => {
-    const x = paddingX + index / Math.max(1, history.length - 1) * (chartWidth - paddingX * 2);
+  const points = chartHistory.map((entry, index) => {
+    const x = paddingX + index / Math.max(1, chartHistory.length - 1) * (chartWidth - paddingX * 2);
     const y = paddingY + (max === min ? 0.5 : (max - entry.total_cny) / (max - min)) * (chartHeight - paddingY * 2);
     return { x, y };
   });
@@ -704,7 +718,7 @@ function HistorySection({ history }: { history: HistoryEntry[] }) {
             <line x1={paddingX} y1={chartHeight / 2} x2={chartWidth - paddingX} y2={chartHeight / 2} />
             <line x1={paddingX} y1={chartHeight - paddingY} x2={chartWidth - paddingX} y2={chartHeight - paddingY} />
             <polyline points={points.map((point) => `${point.x},${point.y}`).join(" ")} />
-            {points.map((point, index) => <circle key={history[index].snapshot_date} cx={point.x} cy={point.y} r="4"><title>{history[index].snapshot_date} · {money(history[index].total_cny)}</title></circle>)}
+            {points.map((point, index) => <circle key={chartHistory[index].snapshot_date} cx={point.x} cy={point.y} r="4"><title>{chartHistory[index].snapshot_date} · {money(chartHistory[index].total_cny)}</title></circle>)}
           </svg>
           <div className="history-axis"><span>{history[0].snapshot_date}</span><span>{history.at(-1)!.snapshot_date}</span></div>
         </div>
@@ -723,6 +737,11 @@ function HistorySection({ history }: { history: HistoryEntry[] }) {
           </tr>)}</tbody>
         </table>
       </div>
+      {pageCount > 1 && <div className="history-pagination">
+        <button type="button" onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))} disabled={currentPage >= pageCount - 1}>上一页</button>
+        <span>第 {currentPage + 1} / {pageCount} 页</span>
+        <button type="button" onClick={() => setPage((current) => Math.max(0, current - 1))} disabled={currentPage <= 0}>下一页</button>
+      </div>}
     </>}
   </section>;
 }
