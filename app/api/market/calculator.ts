@@ -8,6 +8,14 @@ type FundPage = {
   PageSize?: number;
 };
 
+type BnyLiquidityQuote = {
+  annualRate: number;
+  priceDate: string;
+};
+
+const BNY_US_DOLLAR_LIQUIDITY_FUND = "IE0004514828";
+const BNY_US_DOLLAR_LIQUIDITY_URL = "https://www.dreyfus.com/products/nra-offshore/fund/bny-mellon-liquidity-funds-plc-bny-mellon-us-dollar-liquidity-fu.shareclass.Institutional%20Shares.html";
+
 export type MarketCalculation = {
   annualRate: number;
   periodReturn: number;
@@ -267,6 +275,19 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
   }
 
   async function fundReturn(code: string, days: number, isMoney: boolean): Promise<MarketCalculation> {
+    if (code === BNY_US_DOLLAR_LIQUIDITY_FUND) {
+      const quote = await bnyUsdLiquidityQuote();
+      return {
+        annualRate: quote.annualRate,
+        periodReturn: quote.annualRate,
+        requestedDays: days,
+        actualDays: 7,
+        historyLimited: false,
+        startDate: dateBefore(quote.priceDate, 7),
+        endDate: quote.priceDate,
+        source: "BNY Mellon 官方 7 日年化收益率（美元）",
+      };
+    }
     const requestedPageSize = 100;
     const fetchPage = async (pageIndex: number, startDate?: string, endDate?: string) => {
       const params = new URLSearchParams({ fundCode: code, pageIndex: String(pageIndex), pageSize: String(requestedPageSize) });
@@ -320,6 +341,10 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
   }
 
   async function fundQuote(code: string): Promise<MarketQuote> {
+    if (code === BNY_US_DOLLAR_LIQUIDITY_FUND) {
+      const quote = await bnyUsdLiquidityQuote();
+      return { currentPrice: 1, priceCurrency: "USD", priceDate: quote.priceDate };
+    }
     const params = new URLSearchParams({ fundCode: code, pageIndex: "1", pageSize: "1" });
     const response = await upstreamFetch(`https://api.fund.eastmoney.com/f10/lsjz?${params}`);
     if (!response.ok) throw new Error("基金数据服务暂时不可用");
@@ -329,16 +354,34 @@ export function createMarketCalculator(dependencies: CalculatorDependencies) {
     return { currentPrice, priceCurrency: "CNY", priceDate: point.FSRQ };
   }
 
+  async function bnyUsdLiquidityQuote(): Promise<BnyLiquidityQuote> {
+    const response = await upstreamFetch(BNY_US_DOLLAR_LIQUIDITY_URL);
+    if (!response.ok) throw new Error("BNY Mellon 基金数据服务暂时不可用");
+    const page = await response.text();
+    const yieldMatch = page.match(/7-Day Yield With Waiver[\s\S]{0,500}?title="([0-9.]+)"/i);
+    const dateMatch = page.match(/7-Day Yield With Waiver[\s\S]{0,700}?As of\s*&nbsp;\s*(\d{2}\/\d{2}\/\d{2})/i);
+    const annualRate = Number(yieldMatch?.[1]);
+    if (!Number.isFinite(annualRate) || annualRate < 0 || !dateMatch) {
+      throw new Error("没有找到 BNY Mellon 美元流动性基金的 7 日年化收益率");
+    }
+    const [month, day, year] = dateMatch[1].split("/").map(Number);
+    return { annualRate, priceDate: `20${String(year).padStart(2, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}` };
+  }
+
   async function quote(category: string, code: string) {
     return readCachedQuote(quoteCache, `${category}:${code}`, () =>
-      category === "stock" || (category === "fund" && (/^[15]/.test(code) || isUsSecurityCode(code)))
+      code === BNY_US_DOLLAR_LIQUIDITY_FUND
+        ? fundQuote(code)
+        : category === "stock" || (category === "fund" && (/^[15]/.test(code) || isUsSecurityCode(code)))
         ? stockQuote(code)
         : fundQuote(code));
   }
 
   return {
     calculate(category: string, code: string, days: number) {
-      return category === "stock" || (category === "fund" && (/^[15]/.test(code) || isUsSecurityCode(code)))
+      return code === BNY_US_DOLLAR_LIQUIDITY_FUND
+        ? fundReturn(code, days, true)
+        : category === "stock" || (category === "fund" && (/^[15]/.test(code) || isUsSecurityCode(code)))
         ? stockReturn(code, days)
         : fundReturn(code, days, category === "money");
     },

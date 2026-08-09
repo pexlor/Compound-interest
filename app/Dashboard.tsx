@@ -162,14 +162,38 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/auth/me")
-      .then(async (response) => response.ok ? (await response.json()).user : null)
-      .then((currentUser) => {
-        setUser(currentUser);
-        setAssetsLoading(Boolean(currentUser));
+    fetch("/api/dashboard")
+      .then(async (response) => {
+        if (response.status === 401) return null;
+        const data = await response.json() as {
+          user?: User; assets?: Asset[]; history?: HistoryEntry[]; income?: IncomeSettings;
+          rates?: Partial<Record<Currency, number>>; date?: string; stale?: boolean; error?: string;
+        };
+        if (!response.ok) throw new Error(data.error || "读取本地账本失败");
+        return data;
+      })
+      .then((dashboard) => {
+        if (!dashboard) return;
+        setUser(dashboard.user ?? null);
+        setAssets(dashboard.assets ?? []);
+        setHistory(dashboard.history ?? []);
+        setIncome(dashboard.income ?? { monthly_salary: 0, monthly_savings: 0, updated_at: null });
+        setExchangeRates(dashboard.rates ?? { CNY: 1 });
+        setExchangeDate(dashboard.date ?? "");
+        setExchangeStale(Boolean(dashboard.stale));
       })
       .catch(() => setUser(null))
-      .finally(() => setAuthLoading(false));
+      .finally(() => {
+        setAssetsLoading(false);
+        setAuthLoading(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("v") !== "fix1") return;
+    url.searchParams.delete("v");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }, []);
 
   useEffect(() => {
@@ -190,47 +214,6 @@ export default function Dashboard() {
           return;
         }
         setToast("本次打开刷新暂未完成，重新打开会自动重试");
-      });
-    void Promise.all([
-      fetch("/api/assets").then(async (response) => {
-        if (response.status === 401) throw new Error("unauthorized");
-        if (!response.ok) throw new Error("assets");
-        return response.json();
-      }),
-      fetch("/api/exchange-rates").then(async (response) => {
-        if (!response.ok) throw new Error("rates");
-        return response.json();
-      }).catch(() => null),
-      fetch("/api/history?limit=3650").then(async (response) => {
-        if (response.status === 401) throw new Error("unauthorized");
-        if (!response.ok) throw new Error("history");
-        return response.json();
-      }),
-      fetch("/api/income").then(async (response) => {
-        if (response.status === 401) throw new Error("unauthorized");
-        if (!response.ok) throw new Error("income");
-        return response.json();
-      }),
-    ])
-      .then(([assetData, rateData, historyData, incomeData]) => {
-        setAssets(assetData.assets ?? []);
-        setHistory(historyData.history ?? []);
-        setIncome(incomeData.income ?? { monthly_salary: 0, monthly_savings: 0, updated_at: null });
-        if (rateData) {
-          setExchangeRates(rateData.rates);
-          setExchangeDate(rateData.date);
-          setExchangeStale(Boolean(rateData.stale));
-        } else {
-          setToast("资产已读取，但最新汇率暂不可用");
-        }
-      })
-      .catch((error) => {
-        if (error instanceof Error && error.message === "unauthorized") setUser(null);
-        else setToast("读取本地资产失败，请刷新重试");
-      })
-      .finally(() => {
-        setAssetsLoading(false);
-        setExchangeLoading(false);
       });
   }, [user]);
 
@@ -268,7 +251,8 @@ export default function Dashboard() {
   const missingExchangeRate = displayAssets.some((asset) => !exchangeRates[asset.currency]
     || isQuantityAsset(asset) && Boolean(asset.quantity) && !asset.market_return?.currentPrice);
   const portfolioSeries = useMemo(() => calculatePortfolioSeries(displayAssets, exchangeRates, horizon, undefined, income.monthly_savings), [displayAssets, exchangeRates, horizon, income.monthly_savings]);
-  const portfolio = portfolioSeries?.at(-1) ?? null;
+  // Avoid Array.prototype.at(): some Chromium-based browsers still in use do not support it.
+  const portfolio = portfolioSeries?.[portfolioSeries.length - 1] ?? null;
   const total = portfolio?.total ?? 0;
   const forecast = portfolio?.forecast ?? 0;
   const expectedGain = portfolio?.expectedGain ?? 0;
@@ -679,6 +663,10 @@ function EditableInvestmentFields({ asset }: { asset: Asset }) {
 }
 
 const HISTORY_PAGE_SIZE = 90;
+const HISTORY_CHART_WIDTH = 680;
+const HISTORY_CHART_HEIGHT = 240;
+const HISTORY_CHART_PADDING_X = 34;
+const HISTORY_CHART_PADDING_Y = 28;
 
 const HistorySection = memo(function HistorySection({ history }: { history: HistoryEntry[] }) {
   const [page, setPage] = useState(0);
@@ -699,16 +687,13 @@ const HistorySection = memo(function HistorySection({ history }: { history: Hist
     const values = history.map((entry) => entry.total_cny);
     const min = values.length ? Math.min(...values) : 0;
     const max = values.length ? Math.max(...values) : 0;
-    const chartWidth = 680;
-    const chartHeight = 240;
-    const paddingX = 34;
-    const paddingY = 28;
     const points = chartHistory.map((entry, index) => {
-      const x = paddingX + index / Math.max(1, chartHistory.length - 1) * (chartWidth - paddingX * 2);
-      const y = paddingY + (max === min ? 0.5 : (max - entry.total_cny) / (max - min)) * (chartHeight - paddingY * 2);
+      const x = HISTORY_CHART_PADDING_X + index / Math.max(1, chartHistory.length - 1) * (HISTORY_CHART_WIDTH - HISTORY_CHART_PADDING_X * 2);
+      const y = HISTORY_CHART_PADDING_Y + (max === min ? 0.5 : (max - entry.total_cny) / (max - min)) * (HISTORY_CHART_HEIGHT - HISTORY_CHART_PADDING_Y * 2);
       return { x, y };
     });
-    const totalChange = history.length > 1 ? history.at(-1)!.total_cny - history[0].total_cny : 0;
+    const latestHistory = history[history.length - 1];
+    const totalChange = history.length > 1 ? latestHistory.total_cny - history[0].total_cny : 0;
     return { rows, chartHistory, min, max, points, totalChange };
   }, [history, pageStart, pageEnd]);
 
@@ -721,17 +706,17 @@ const HistorySection = memo(function HistorySection({ history }: { history: Hist
       {history.length >= 2 ? <div className="history-chart-grid">
         <div className="history-chart" aria-label="历史总资产折线图">
           <div className="history-chart-labels"><span>{money(max)}</span><span>{money(min)}</span></div>
-          <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label="按日期排列的历史总资产走势">
-            <line x1={paddingX} y1={paddingY} x2={chartWidth - paddingX} y2={paddingY} />
-            <line x1={paddingX} y1={chartHeight / 2} x2={chartWidth - paddingX} y2={chartHeight / 2} />
-            <line x1={paddingX} y1={chartHeight - paddingY} x2={chartWidth - paddingX} y2={chartHeight - paddingY} />
+            <svg viewBox={`0 0 ${HISTORY_CHART_WIDTH} ${HISTORY_CHART_HEIGHT}`} role="img" aria-label="按日期排列的历史总资产走势">
+              <line x1={HISTORY_CHART_PADDING_X} y1={HISTORY_CHART_PADDING_Y} x2={HISTORY_CHART_WIDTH - HISTORY_CHART_PADDING_X} y2={HISTORY_CHART_PADDING_Y} />
+              <line x1={HISTORY_CHART_PADDING_X} y1={HISTORY_CHART_HEIGHT / 2} x2={HISTORY_CHART_WIDTH - HISTORY_CHART_PADDING_X} y2={HISTORY_CHART_HEIGHT / 2} />
+              <line x1={HISTORY_CHART_PADDING_X} y1={HISTORY_CHART_HEIGHT - HISTORY_CHART_PADDING_Y} x2={HISTORY_CHART_WIDTH - HISTORY_CHART_PADDING_X} y2={HISTORY_CHART_HEIGHT - HISTORY_CHART_PADDING_Y} />
             <polyline points={points.map((point) => `${point.x},${point.y}`).join(" ")} />
             {points.map((point, index) => <circle key={chartHistory[index].snapshot_date} cx={point.x} cy={point.y} r="4"><title>{chartHistory[index].snapshot_date} · {money(chartHistory[index].total_cny)}</title></circle>)}
           </svg>
-          <div className="history-axis"><span>{history[0].snapshot_date}</span><span>{history.at(-1)!.snapshot_date}</span></div>
+          <div className="history-axis"><span>{history[0].snapshot_date}</span><span>{history[history.length - 1].snapshot_date}</span></div>
         </div>
         <div className="history-summary">
-          <span>最新总资产</span><strong>{money(history.at(-1)!.total_cny)}</strong>
+          <span>最新总资产</span><strong>{money(history[history.length - 1].total_cny)}</strong>
           <small>区间变化</small><b className={totalChange < 0 ? "negative" : "positive"}>{totalChange > 0 ? "+" : ""}{money(totalChange)}</b>
         </div>
       </div> : <div className="history-empty compact"><strong>已记录今天的总资产</strong><span>再产生一天记录后显示走势。</span></div>}

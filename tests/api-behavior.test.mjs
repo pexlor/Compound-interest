@@ -1395,6 +1395,28 @@ test("money fund returns never report n-year history as limited", async () => {
   assert.equal(payload.historyLimited, false);
 });
 
+test("BNY USD liquidity fund uses the manager's USD 7-day yield instead of a domestic money-fund feed", async () => {
+  const { createMarketCalculator } = await load("app/api/market/calculator.ts");
+  const calculator = createMarketCalculator({
+    fetch: async (url) => {
+      assert.match(String(url), /dreyfus\.com/);
+      return new Response(`
+        <div>7-Day Yield With Waiver</div>
+        <div class="overview-stats__value" title="3.66">3.66% <small>As of&nbsp; 08/07/26</small></div>
+      `);
+    },
+  });
+  const result = await calculator.calculate("fund", "IE0004514828", 365);
+  assert.deepEqual(result, {
+    annualRate: 3.66, periodReturn: 3.66, requestedDays: 365, actualDays: 7,
+    historyLimited: false, startDate: "2026-07-31", endDate: "2026-08-07",
+    source: "BNY Mellon 官方 7 日年化收益率（美元）",
+  });
+  assert.deepEqual(await calculator.quote("fund", "IE0004514828"), {
+    currentPrice: 1, priceCurrency: "USD", priceDate: "2026-08-07",
+  });
+});
+
 test("market API aborts slow upstream requests", async () => {
   const { createMarketHandler } = await load("app/api/market/handler.ts");
   const fetch = async (_url, init) => new Promise((_resolve, reject) => {
