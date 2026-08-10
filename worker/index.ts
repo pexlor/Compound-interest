@@ -50,22 +50,11 @@ const worker = createWorkerLifecycle<Env, ExecutionContext>({
   },
   async startup(env) {
     await initializeAssetsDb(env.DB);
-    try {
-      await createExchangeRateHistorySync({
-        db: env.DB,
-        bucket: env.RATES,
-        fetch: (input, init) => fetch(input, init),
-      }).sync();
-    } catch (error) {
-      console.error("[exchange-rate-history]", {
-        event: "startup_sync_failed",
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
     return prewarmMarketReturns(env.DB, (input, init) => fetch(input, init));
   },
   scheduled(controller, env) {
-    if (controller.cron === "0 16 * * *") {
+    // 01:20 UTC is 09:20 in China Standard Time (UTC+8).
+    if (controller.cron === "20 1 * * *") {
       return initializeAssetsDb(env.DB).then(() => createExchangeRateHistorySync({
         db: env.DB,
         bucket: env.RATES,

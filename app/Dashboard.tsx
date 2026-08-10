@@ -389,14 +389,14 @@ export default function Dashboard() {
   async function refreshExchangeRates() {
     setExchangeLoading(true);
     try {
-      const response = await fetch("/api/exchange-rates?refresh=1");
+      const response = await fetch("/api/exchange-rates");
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "读取最新汇率失败");
       setExchangeRates(data.rates);
       setExchangeDate(data.date);
       setExchangeStale(Boolean(data.stale));
       await refreshHistory();
-      setToast(data.stale ? "实时汇率暂不可用，已继续使用上次汇率" : data.snapshot ? "最新汇率与今日历史已更新" : "最新汇率已更新，历史快照暂不可用");
+      setToast(data.stale ? "汇率缓存暂不可用" : `已读取 ${data.date} 的汇率缓存`);
     } catch (error) {
       setToast(error instanceof Error ? error.message : "读取最新汇率失败");
     } finally {
@@ -526,7 +526,7 @@ export default function Dashboard() {
 
         <section className="summary-grid" id="overview">
           <article className="total-card">
-            <div className="card-label"><span>总资产 · 折合人民币</span><button className={`exchange-status${exchangeStale ? " stale" : ""}`} onClick={refreshExchangeRates} disabled={exchangeLoading}>{exchangeLoading ? "正在更新汇率…" : exchangeDate ? `${exchangeDate} 汇率 · 刷新` : "刷新最新汇率"}</button></div>
+            <div className="card-label"><span>总资产 · 折合人民币</span><button className={`exchange-status${exchangeStale ? " stale" : ""}`} onClick={refreshExchangeRates} disabled={exchangeLoading}>{exchangeLoading ? "正在读取汇率…" : exchangeDate ? `${exchangeDate} 汇率 · 读取缓存` : "读取汇率缓存"}</button></div>
             <div className="total-value">{missingExchangeRate ? "行情或汇率暂不可用" : money(total)}</div>
             <div className="change-row"><span className="change-pill">汇率折算</span><span>本月预估增长 {missingExchangeRate ? "等待汇率" : money(expectedGain / Math.max(1, horizon * 12))}</span></div>
             <div className="mini-stats">

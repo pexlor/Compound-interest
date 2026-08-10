@@ -106,17 +106,26 @@ export function mergeRateRows(
 ): ExchangeRateHistoryFile {
   parseDate(checkedThrough);
   if (!Number.isFinite(now.getTime())) throw new Error("无效的汇率同步时间");
-  const grouped = new Map<string, Partial<Record<SupportedCurrency, number>>>();
+  const grouped = new Map<string, Partial<Record<SupportedCurrency | "CNY", number>>>();
   for (const row of rows) {
-    if (row.base !== "CNY" || !SUPPORTED_CURRENCIES.includes(row.quote as SupportedCurrency)
+    if (row.base !== "USD" || !(["CNY", ...SUPPORTED_CURRENCIES] as string[]).includes(row.quote)
       || !Number.isFinite(row.rate) || row.rate <= 0) continue;
     parseDate(row.date);
     const rates = grouped.get(row.date) ?? {};
-    rates[row.quote as SupportedCurrency] = 1 / row.rate;
+    rates[row.quote as SupportedCurrency | "CNY"] = row.rate;
     grouped.set(row.date, rates);
   }
   const dates = { ...file.dates };
-  for (const [date, rates] of grouped) {
+  for (const [date, usdQuotes] of grouped) {
+    const usdCny = usdQuotes.CNY;
+    if (!Number.isFinite(usdCny) || (usdCny ?? 0) <= 0) continue;
+    const rates: Partial<Record<SupportedCurrency, number>> = { USD: usdCny };
+    for (const currency of SUPPORTED_CURRENCIES) {
+      if (currency === "USD") continue;
+      const usdCurrency = usdQuotes[currency];
+      if (!Number.isFinite(usdCurrency) || (usdCurrency ?? 0) <= 0) continue;
+      rates[currency] = usdCny / usdCurrency;
+    }
     if (!SUPPORTED_CURRENCIES.every((currency) => Number.isFinite(rates[currency]) && (rates[currency] ?? 0) > 0)) continue;
     dates[date] = { source: SOURCE, rates: rates as Record<SupportedCurrency, number> };
   }

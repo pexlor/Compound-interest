@@ -241,12 +241,12 @@ test("Worker config binds R2 and separates exchange sync, market prewarm, and th
     read(".openai/hosting.json"),
     read("app/api/history/daily-snapshot.ts"),
   ]);
-  assert.match(viteConfig, /crons:\s*\["0 16 \* \* \*",\s*"10 20 \* \* \*",\s*"58 3 \* \* \*"\]/);
+  assert.match(viteConfig, /crons:\s*\["20 1 \* \* \*",\s*"10 20 \* \* \*",\s*"58 3 \* \* \*"\]/);
   assert.match(hosting, /"r2":\s*"RATES"/);
   assert.match(worker, /createWorkerLifecycle/);
   assert.match(worker, /RATES:\s*R2Bucket/);
   assert.match(worker, /createExchangeRateHistorySync/);
-  assert.match(worker, /controller\.cron === "0 16 \* \* \*"/);
+  assert.match(worker, /controller\.cron === "20 1 \* \* \*"/);
   assert.match(worker, /controller\.cron === "10 20 \* \* \*"/);
   assert.match(worker, /controller\.cron === "58 3 \* \* \*"/);
   assert.match(worker, /prewarmMarketReturns/);

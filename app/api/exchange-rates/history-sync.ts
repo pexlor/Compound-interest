@@ -74,8 +74,11 @@ export function createExchangeRateHistorySync(dependencies: Dependencies) {
 
   async function fetchRows(from?: string, to?: string): Promise<RateRow[]> {
     const endpoint = new URL("https://api.frankfurter.dev/v2/rates");
-    endpoint.searchParams.set("base", "CNY");
-    endpoint.searchParams.set("quotes", SUPPORTED_CURRENCIES.join(","));
+    // USD/CNY is the rate used for US-security returns.  Fetch it directly
+    // instead of deriving it by inverting a CNY-based quote.  The remaining
+    // USD quotes let us retain CNY conversion for the other supported assets.
+    endpoint.searchParams.set("base", "USD");
+    endpoint.searchParams.set("quotes", ["CNY", ...SUPPORTED_CURRENCIES.filter((currency) => currency !== "USD")].join(","));
     if (from) endpoint.searchParams.set("from", from);
     if (to) endpoint.searchParams.set("to", to);
     const controller = new AbortController();

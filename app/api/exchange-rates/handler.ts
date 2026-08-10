@@ -35,35 +35,47 @@ export function createExchangeRatesHandler(dependencies: Dependencies) {
 
   async function fetchFrankfurterRates(): Promise<RatesPayload> {
     const endpoint = new URL("https://api.frankfurter.dev/v2/rates");
-    endpoint.searchParams.set("base", "CNY");
-    endpoint.searchParams.set("quotes", foreignCurrencies.join(","));
+    endpoint.searchParams.set("base", "USD");
+    endpoint.searchParams.set("quotes", ["CNY", ...foreignCurrencies.filter((currency) => currency !== "USD")].join(","));
     const response = await upstreamFetch(endpoint);
     if (!response.ok) throw new Error("最新汇率服务暂不可用");
     const rows = await response.json() as RateRow[];
     const rates: Record<string, number> = { CNY: 1 };
+    const usdCny = rows.find((item) => item.base === "USD" && item.quote === "CNY")?.rate;
+    if (!Number.isFinite(usdCny) || (usdCny ?? 0) <= 0) throw new Error("未取得 USD/CNY 的最新汇率");
     for (const currency of foreignCurrencies) {
-      const row = rows.find((item) => item.base === "CNY" && item.quote === currency);
-      if (!row || !Number.isFinite(row.rate) || row.rate <= 0) throw new Error(`未取得 ${currency} 的最新汇率`);
-      rates[currency] = 1 / row.rate;
+      if (currency === "USD") {
+        rates.USD = usdCny;
+        continue;
+      }
+      const row = rows.find((item) => item.base === "USD" && item.quote === currency);
+      if (!row || !Number.isFinite(row.rate) || row.rate <= 0) throw new Error(`未取得 USD/${currency} 的最新汇率`);
+      rates[currency] = usdCny / row.rate;
     }
     return {
       rates,
       date: rows.map((row) => row.date).filter(Boolean).sort().at(-1) || "",
-      source: "Frankfurter 央行参考汇率",
+      source: "Frankfurter USD/CNY 央行参考汇率",
       fetchedAt: new Date(now()).toISOString(),
     };
   }
 
   async function fetchBackupRates(): Promise<RatesPayload> {
-    const response = await upstreamFetch("https://api.exchangerate-api.com/v4/latest/CNY");
+    const response = await upstreamFetch("https://api.exchangerate-api.com/v4/latest/USD");
     if (!response.ok) throw new Error("备用汇率服务暂不可用");
     const payload = await response.json() as { base?: string; date?: string; rates?: Record<string, number> };
-    if (payload.base !== "CNY" || !payload.rates) throw new Error("备用汇率数据格式异常");
+    if (payload.base !== "USD" || !payload.rates) throw new Error("备用汇率数据格式异常");
     const rates: Record<string, number> = { CNY: 1 };
+    const usdCny = payload.rates.CNY;
+    if (!Number.isFinite(usdCny) || (usdCny ?? 0) <= 0) throw new Error("未取得 USD/CNY 的备用汇率");
     for (const currency of foreignCurrencies) {
+      if (currency === "USD") {
+        rates.USD = usdCny;
+        continue;
+      }
       const rate = payload.rates[currency];
-      if (!Number.isFinite(rate) || rate <= 0) throw new Error(`未取得 ${currency} 的备用汇率`);
-      rates[currency] = 1 / rate;
+      if (!Number.isFinite(rate) || rate <= 0) throw new Error(`未取得 USD/${currency} 的备用汇率`);
+      rates[currency] = usdCny / rate;
     }
     return {
       rates,
@@ -86,18 +98,12 @@ export function createExchangeRatesHandler(dependencies: Dependencies) {
     if (!user) return Response.json({ error: "请先登录" }, { status: 401 });
     const force = new URL(request.url).searchParams.get("refresh") === "1";
     let staleRates: RatesPayload | null = null;
-    if (dependencies.getAssetsDb && dependencies.readLatestRates && dependencies.syncHistory) {
+    if (dependencies.getAssetsDb && dependencies.readLatestRates) {
       let latest: StoredRates | null = null;
       try {
         const db = await dependencies.getAssetsDb();
         latest = await dependencies.readLatestRates(db);
-        const currentUtcDate = new Date(now()).toISOString().slice(0, 10);
-        if (!force && ((!latest || latest.date < currentUtcDate) && historyCheckedThrough !== currentUtcDate)) {
-          await dependencies.syncHistory(db);
-          historyCheckedThrough = currentUtcDate;
-          latest = await dependencies.readLatestRates(db);
-        }
-        if (latest && !force) {
+        if (latest) {
           const payload: RatesPayload = {
             rates: { CNY: 1, ...latest.rates },
             date: latest.date,
@@ -125,6 +131,12 @@ export function createExchangeRatesHandler(dependencies: Dependencies) {
             message: error instanceof Error ? error.message : String(error),
           });
         }
+      }
+      // In the deployed app, rates are refreshed only by the 09:20 Beijing
+      // scheduled job.  Do not turn a user request (including refresh=1) into
+      // an upstream request when the cache is missing.
+      if (dependencies.getAssetsDb && dependencies.readLatestRates) {
+        return Response.json({ error: "汇率缓存尚未就绪，请等待每日 09:20 同步完成" }, { status: 503 });
       }
     }
     if (!force && cache && cache.expiresAt > now()) return Response.json({ ...cache, expiresAt: undefined, cached: true });
