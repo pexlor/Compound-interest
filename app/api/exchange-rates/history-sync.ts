@@ -72,13 +72,10 @@ export function createExchangeRateHistorySync(dependencies: Dependencies) {
   // response before falling back to the latest-rate provider.
   const timeoutMs = dependencies.timeoutMs ?? 20_000;
 
-  async function fetchRows(from?: string, to?: string): Promise<RateRow[]> {
+  async function fetchRows(base: "USD" | "CNY", quotes: readonly string[], from?: string, to?: string): Promise<RateRow[]> {
     const endpoint = new URL("https://api.frankfurter.dev/v2/rates");
-    // USD/CNY is the rate used for US-security returns.  Fetch it directly
-    // instead of deriving it by inverting a CNY-based quote.  The remaining
-    // USD quotes let us retain CNY conversion for the other supported assets.
-    endpoint.searchParams.set("base", "USD");
-    endpoint.searchParams.set("quotes", ["CNY", ...SUPPORTED_CURRENCIES.filter((currency) => currency !== "USD")].join(","));
+    endpoint.searchParams.set("base", base);
+    endpoint.searchParams.set("quotes", quotes.join(","));
     if (from) endpoint.searchParams.set("from", from);
     if (to) endpoint.searchParams.set("to", to);
     const controller = new AbortController();
@@ -134,11 +131,19 @@ export function createExchangeRateHistorySync(dependencies: Dependencies) {
           const rows: RateRow[] = [];
           for (const window of windows) {
             logger.info("[exchange-rate-history]", { event: "fetch_window", ...window, attempt });
-            rows.push(...await fetchRows(window.from, window.to));
+            const [usdCnyRows, otherCnyRows] = await Promise.all([
+              fetchRows("USD", ["CNY"], window.from, window.to),
+              fetchRows("CNY", SUPPORTED_CURRENCIES.filter((currency) => currency !== "USD"), window.from, window.to),
+            ]);
+            rows.push(...usdCnyRows, ...otherCnyRows);
           }
           if (options.forceLatest && windows.length === 0) {
             logger.info("[exchange-rate-history]", { event: "fetch_latest", attempt });
-            rows.push(...await fetchRows());
+            const [usdCnyRows, otherCnyRows] = await Promise.all([
+              fetchRows("USD", ["CNY"]),
+              fetchRows("CNY", SUPPORTED_CURRENCIES.filter((currency) => currency !== "USD")),
+            ]);
+            rows.push(...usdCnyRows, ...otherCnyRows);
           }
 
           const needsWrite = stored.file === null || windows.length > 0 || options.forceLatest === true;

@@ -294,12 +294,12 @@ test("exchange rate history inserts are found by the latest date on or before th
 const supportedExchangeRateCurrencies = ["USD", "HKD", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "CHF"];
 
 function sampleFrankfurterRows(date = "2026-07-31") {
-  return ["CNY", ...supportedExchangeRateCurrencies.filter((currency) => currency !== "USD")].map((currency, index) => ({
-    date,
-    base: "USD",
-    quote: currency,
-    rate: currency === "CNY" ? 7.2 : 0.1 + index / 100,
-  }));
+  return [
+    { date, base: "USD", quote: "CNY", rate: 7.2 },
+    ...supportedExchangeRateCurrencies.filter((currency) => currency !== "USD").map((quote, index) => ({
+      date, base: "CNY", quote, rate: 0.1 + index / 100,
+    })),
+  ];
 }
 
 function createMemoryRatesBucket(initialText = null, options = {}) {
@@ -419,8 +419,9 @@ test("exchange history sync backfills ten years, writes once, imports D1, and lo
     logger,
   }).sync();
 
-  assert.equal(fetcher.urls.length, 10);
-  assert.ok(fetcher.urls.every((url) => url.searchParams.get("base") === "USD"));
+  assert.equal(fetcher.urls.length, 20);
+  assert.equal(fetcher.urls.filter((url) => url.searchParams.get("base") === "USD").length, 10);
+  assert.equal(fetcher.urls.filter((url) => url.searchParams.get("base") === "CNY").length, 10);
   assert.equal(bucket.puts.length, 1);
   assert.equal(summary.currencies, 9);
   assert.equal(summary.inserted, 18);
@@ -448,7 +449,7 @@ test("exchange history sync advances an existing file after an empty incremental
     logger: silentHistoryLogger,
   }).sync();
 
-  assert.equal(fetcher.urls.length, 1);
+  assert.equal(fetcher.urls.length, 2);
   assert.equal(fetcher.urls[0].searchParams.get("from"), "2026-08-02");
   assert.equal(JSON.parse(bucket.currentText()).checkedThrough, "2026-08-02");
 });
@@ -473,7 +474,7 @@ test("exchange history sync never fetches earlier than the rolling ten-year cuto
   }).sync();
 
   assert.equal(fetcher.urls[0].searchParams.get("from"), "2016-08-03");
-  assert.equal(fetcher.urls.length, 10);
+  assert.equal(fetcher.urls.length, 20);
 });
 
 test("exchange history sync never overwrites R2 after a failed window or damaged file", async () => {
