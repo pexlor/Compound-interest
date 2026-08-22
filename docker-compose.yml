@@ -1,0 +1,18 @@
+services:
+  api:
+    build: ./go-backend
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - fulibu-data:/data
+    restart: unless-stopped
+  web:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  fulibu-data:

@@ -1,8 +1,8 @@
 FROM golang:1.24-bookworm AS build
 WORKDIR /src
-COPY go-backend/go.mod go-backend/go.sum* ./
+COPY go.mod go.sum* ./
 RUN go mod download
-COPY go-backend/ .
+COPY . .
 RUN CGO_ENABLED=1 go build -trimpath -ldflags='-s -w' -o /fulibu ./cmd/server
 
 FROM debian:bookworm-slim
@@ -11,4 +11,5 @@ COPY --from=build /fulibu /usr/local/bin/fulibu
 USER fulibu
 ENV DATA_DIR=/data PORT=8080
 EXPOSE 8080
+VOLUME ["/data"]
 ENTRYPOINT ["/usr/local/bin/fulibu"]
