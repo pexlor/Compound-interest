@@ -257,13 +257,11 @@ export default function Dashboard() {
     if (!asset.code) return asset;
     const marketReturn = marketRates[marketKey(asset.category, asset.code)];
     if (!marketReturn) return asset;
-    const liveAmount = asset.quantity && marketReturn.currentPrice
-      ? Math.round(asset.quantity * marketReturn.currentPrice * 100)
-      : asset.amount;
+    // 行情加载是异步的；不要在它返回后用“数量 × 最新价”临时改写
+    // 已保存的资产金额，否则页面打开后总资产会发生一次视觉跳变。
+    // 用户在新增或编辑资产时，才会明确以实时价格保存新的金额。
     return {
       ...asset,
-      amount: liveAmount,
-      currency: marketReturn.priceCurrency ?? asset.currency,
       annual_rate: marketReturn.annualRate,
       market_return: marketReturn,
     };
