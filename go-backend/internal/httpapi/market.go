@@ -134,6 +134,39 @@ func quoteDate(value string) string {
 	return ""
 }
 
+// refreshMarketAssetValues writes the latest quote into every quantity-based
+// asset before a portfolio snapshot is calculated. A quote failure leaves its
+// most recently saved valuation intact, so one unavailable symbol cannot
+// prevent the rest of the portfolio from being recorded.
+func (a *app) refreshMarketAssetValues(userID int64) error {
+	assets, err := a.listAssets(userID)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 12 * time.Second}
+	for _, asset := range assets {
+		if (asset.Category != "stock" && asset.Category != "fund") || asset.Code == nil || asset.Quantity == nil || *asset.Quantity <= 0 {
+			continue
+		}
+		symbol, quoteCurrency, err := tencentSymbol(asset.Category, *asset.Code)
+		if err != nil {
+			continue
+		}
+		price, _, err := fetchTencentQuote(client, symbol)
+		if err != nil {
+			continue
+		}
+		amount := int64(math.Round(*asset.Quantity * price * 100))
+		if amount <= 0 {
+			continue
+		}
+		if _, err := a.db.Exec("UPDATE assets SET amount=?,currency=? WHERE id=? AND user_id=?", amount, quoteCurrency, asset.ID, userID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func fetchTencentHistory(client *http.Client, symbol string, days int) ([]json.RawMessage, error) {
 	parameter := fmt.Sprintf("%s,day,,,%d,qfq", symbol, days+10)
 	endpoint := "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?" + url.Values{"param": {parameter}}.Encode()

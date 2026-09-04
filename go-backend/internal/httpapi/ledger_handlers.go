@@ -82,7 +82,7 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 	// Opening the dashboard is also a useful observation point for the user's
 	// current total.  The daily uniqueness constraint makes repeated opens
 	// update today's single row instead of creating duplicates.
-	snapshotRecorded, _ := a.ledger.Snapshot(u.ID, "dashboard_open")
+	snapshotRecorded, _ := a.snapshotCurrentAssets(u.ID, "dashboard_open")
 	assets, e := a.listAssets(u.ID)
 	if e != nil {
 		fail(w, 500, e.Error())
@@ -104,4 +104,14 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out(w, 200, map[string]any{"user": u, "assets": assets, "history": history, "income": income, "rates": rates, "date": date, "stale": date == "", "snapshotRecorded": snapshotRecorded})
+}
+
+// snapshotCurrentAssets refreshes quote-based holdings first, then records the
+// portfolio total. It keeps the displayed dashboard and its history row on
+// the same valuation basis.
+func (a *app) snapshotCurrentAssets(userID int64, trigger string) (bool, error) {
+	if err := a.refreshMarketAssetValues(userID); err != nil {
+		return false, err
+	}
+	return a.ledger.Snapshot(userID, trigger)
 }
