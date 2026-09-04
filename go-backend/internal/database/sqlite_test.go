@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+// TestImportLegacyIsRepeatableAndAllowsMissingOptionalTables 验证旧数据导入可重复执行且兼容缺失的可选表。
 func TestImportLegacyIsRepeatableAndAllowsMissingOptionalTables(t *testing.T) {
 	target, err := Open(t.TempDir())
 	if err != nil {

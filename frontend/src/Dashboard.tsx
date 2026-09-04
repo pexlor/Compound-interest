@@ -38,12 +38,13 @@ type HistoryEntry = {
   id: number;
   snapshot_date: string;
   total_cny: number;
-  trigger: "asset_change" | "exchange_refresh" | "scheduled_daily";
+  trigger: "asset_change" | "exchange_refresh" | "daily_scheduled" | "dashboard_open" | "startup_recovery";
   rate_date: string | null;
 };
 type IncomeSettings = {
   monthly_salary: number;
   monthly_savings: number;
+  annual_bonus: number;
   updated_at: string | null;
 };
 type RetirementItem = { id: number; name: string; category: string; amount: number; currency: Currency };
@@ -59,6 +60,7 @@ const categoryMeta: Record<Category, { name: string; short: string; color: strin
 };
 
 const assetColors = ["#34775c", "#e4a83f", "#df7259", "#6f8fd6", "#9a76c4", "#3aa6a0", "#c985a2", "#84975a", "#c47b3d", "#70818d"];
+const ASSET_PAGE_SIZE = 5;
 
 type AllocationSegment = { key: string; label: string; amount: number; color: string };
 
@@ -77,6 +79,7 @@ const currencyMeta: Record<Currency, string> = {
 
 const numberFormatters = new Map<string, Intl.NumberFormat>();
 
+// getNumberFormatter 缓存并返回指定格式的中文数字格式化器。
 function getNumberFormatter(key: string, options: Intl.NumberFormatOptions) {
   let formatter = numberFormatters.get(key);
   if (!formatter) {
@@ -86,31 +89,40 @@ function getNumberFormatter(key: string, options: Intl.NumberFormatOptions) {
   return formatter;
 }
 
+// money 将以分为单位的金额格式化为人民币。
 const money = (cents: number, digits = 0) => getNumberFormatter(`money:${digits}`, {
   style: "currency", currency: "CNY", minimumFractionDigits: digits, maximumFractionDigits: digits,
 }).format(cents / 100);
 
+// originalMoney 按资产原始币种格式化金额。
 const originalMoney = (cents: number, currency: Currency) => getNumberFormatter(`original:${currency}`, {
   style: "currency", currency, currencyDisplay: "symbol",
   minimumFractionDigits: currency === "JPY" ? 0 : 2,
   maximumFractionDigits: currency === "JPY" ? 0 : 2,
 }).format(cents / 100);
 
+// toCny 使用当前汇率将资产市值换算为人民币分。
 const toCny = (asset: Asset, rates: Partial<Record<Currency, number>>) =>
   asset.amount * (rates[asset.currency] ?? 0);
 
+// isQuantityAsset 判断资产是否需要记录持有数量。
 const isQuantityAsset = (asset: Pick<Asset, "category">) => asset.category === "stock" || asset.category === "fund";
 
+// quantityText 格式化股票或基金的持有数量。
 const quantityText = (value: number) => getNumberFormatter("quantity", { maximumFractionDigits: 8 }).format(value);
 
+// priceText 按指定币种格式化单位价格。
 const priceText = (value: number, currency: Currency) => getNumberFormatter(`price:${currency}`, {
   style: "currency", currency, maximumFractionDigits: 4,
 }).format(value);
 
+// supportsInvestment 判断资产类别是否支持定投计划。
 const supportsInvestment = (asset: Pick<Asset, "category">) => asset.category === "fund";
 
+// marketKey 生成市场行情缓存的唯一键。
 const marketKey = (category: string, code: string) => `${category}:${code.trim().toUpperCase()}`;
 
+// StarMapMark 渲染“资产星图”的品牌星座图标。
 function StarMapMark() {
   return <span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none">
     <path d="M8 21 15.5 10l8.5 8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
@@ -119,6 +131,7 @@ function StarMapMark() {
   </svg></span>;
 }
 
+// Dashboard 承载资产星图的登录态、资产、预测和退休目标界面。
 export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -126,10 +139,11 @@ export default function Dashboard() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [marketRates, setMarketRates] = useState<Record<string, MarketReturnMeta>>({});
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [income, setIncome] = useState<IncomeSettings>({ monthly_salary: 0, monthly_savings: 0, updated_at: null });
+  const [income, setIncome] = useState<IncomeSettings>({ monthly_salary: 0, monthly_savings: 0, annual_bonus: 0, updated_at: null });
   const [retirement, setRetirement] = useState<Retirement | null>(null);
   const [savingRetirement, setSavingRetirement] = useState(false);
   const [activeFilter, setActiveFilter] = useState<"all" | Category>("all");
+  const [assetPage, setAssetPage] = useState(0);
   const [allocationMode, setAllocationMode] = useState<"category" | "asset">("category");
   const [horizon, setHorizon] = useState(3);
   const [lookback, setLookback] = useState(3);
@@ -145,6 +159,7 @@ export default function Dashboard() {
   const [exchangeLoading, setExchangeLoading] = useState(false);
   const [exchangeStale, setExchangeStale] = useState(false);
 
+  // loadMarketRates 拉取并缓存已持仓证券的行情与年化收益率。
   const loadMarketRates = useCallback(async (selectedLookback: number, notify = false, signal?: AbortSignal) => {
     setSyncing(true);
     try {
@@ -188,7 +203,7 @@ export default function Dashboard() {
         setUser(dashboard.user ?? null);
         setAssets(dashboard.assets ?? []);
         setHistory(dashboard.history ?? []);
-        setIncome(dashboard.income ?? { monthly_salary: 0, monthly_savings: 0, updated_at: null });
+        setIncome(dashboard.income ?? { monthly_salary: 0, monthly_savings: 0, annual_bonus: 0, updated_at: null });
         setExchangeRates(dashboard.rates ?? { CNY: 1 });
         setExchangeDate(dashboard.date ?? "");
         setExchangeStale(Boolean(dashboard.stale));
@@ -201,6 +216,7 @@ export default function Dashboard() {
       });
   }, []);
 
+  // saveRetirement 提交一项新的退休目标资产。
   async function saveRetirement(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSavingRetirement(true);
     try {
@@ -211,6 +227,7 @@ export default function Dashboard() {
       setRetirement(data); event.currentTarget.reset(); setToast("退休目标资产已添加");
     } catch (error) { setToast(error instanceof Error ? error.message : "保存退休目标失败"); } finally { setSavingRetirement(false); }
   }
+  // removeRetirementItem 删除指定的退休目标资产。
   async function removeRetirementItem(id: number) { const response=await fetch(`/api/retirement?id=${id}`,{method:"DELETE"}); const data=await response.json() as Retirement & {error?:string}; if(!response.ok){setToast(data.error||"删除失败");return};setRetirement(data); }
 
   useEffect(() => {
@@ -251,9 +268,11 @@ export default function Dashboard() {
       market_return: marketReturn,
     };
   }), [assets, marketRates]);
-  const missingExchangeRate = displayAssets.some((asset) => !exchangeRates[asset.currency]
-    || isQuantityAsset(asset) && Boolean(asset.quantity) && !asset.market_return?.currentPrice);
-  const portfolioSeries = useMemo(() => calculatePortfolioSeries(displayAssets, exchangeRates, horizon, undefined, income.monthly_savings), [displayAssets, exchangeRates, horizon, income.monthly_savings]);
+  // A quote refresh is an enhancement, not a prerequisite for showing the
+  // portfolio: each asset already stores its last known market value. Only a
+  // genuinely missing currency conversion should block the aggregate view.
+  const missingExchangeRate = displayAssets.some((asset) => !exchangeRates[asset.currency]);
+  const portfolioSeries = useMemo(() => calculatePortfolioSeries(displayAssets, exchangeRates, horizon, undefined, income.monthly_savings, income.annual_bonus), [displayAssets, exchangeRates, horizon, income.monthly_savings, income.annual_bonus]);
   // Avoid Array.prototype.at(): some Chromium-based browsers still in use do not support it.
   const portfolio = portfolioSeries?.[portfolioSeries.length - 1] ?? null;
   const total = portfolio?.total ?? 0;
@@ -286,12 +305,16 @@ export default function Dashboard() {
     : "#edf1ee";
 
   const filtered = activeFilter === "all" ? displayAssets : displayAssets.filter((asset) => asset.category === activeFilter);
+  const assetPageCount = Math.max(1, Math.ceil(filtered.length / ASSET_PAGE_SIZE));
+  const currentAssetPage = Math.min(assetPage, assetPageCount - 1);
+  const pagedAssets = filtered.slice(currentAssetPage * ASSET_PAGE_SIZE, currentAssetPage * ASSET_PAGE_SIZE + ASSET_PAGE_SIZE);
   const limitedHistoryCount = displayAssets.filter((asset) => asset.market_return?.historyLimited).length;
   const selectedMarket = selected ? displayAssets.find((asset) => asset.id === selected.id) ?? selected : null;
   const chartValues = portfolioSeries?.map((item) => item.forecast) ?? [];
   const minChart = Math.min(...chartValues);
   const maxChart = Math.max(...chartValues);
 
+  // refreshHistory 重新读取资产历史走势数据。
   async function refreshHistory() {
     try {
       const response = await fetch("/api/history?limit=3650");
@@ -307,6 +330,7 @@ export default function Dashboard() {
     }
   }
 
+  // saveIncome 保存工资、储蓄和年终奖设置。
   async function saveIncome(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSavingIncome(true);
@@ -318,6 +342,7 @@ export default function Dashboard() {
         body: JSON.stringify({
           monthlySalary: Number(form.get("monthlySalary")),
           monthlySavings: Number(form.get("monthlySavings")),
+          annualBonus: Number(form.get("annualBonus")),
         }),
       });
       const data = await response.json();
@@ -327,7 +352,7 @@ export default function Dashboard() {
       }
       if (!response.ok) throw new Error(data.error || "保存工资设置失败");
       setIncome(data.income);
-      setToast("工资与预计储蓄额已保存，未来预测已更新");
+      setToast("工资、年终奖与预计储蓄额已保存，未来预测已更新");
     } catch (error) {
       setToast(error instanceof Error ? error.message : "保存工资设置失败");
     } finally {
@@ -335,6 +360,7 @@ export default function Dashboard() {
     }
   }
 
+  // addAsset 查询必要行情后新增资产。
   async function addAsset(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
@@ -385,14 +411,18 @@ export default function Dashboard() {
     }
   }
 
+  // syncMarketRates 由用户主动刷新已持仓证券的行情。
   async function syncMarketRates() {
     await loadMarketRates(lookback, true);
   }
 
+  // refreshExchangeRates 强制刷新外币兑人民币汇率。
   async function refreshExchangeRates() {
     setExchangeLoading(true);
     try {
-      const response = await fetch("/api/exchange-rates");
+      // This action is explicitly user initiated, so ask the server to refresh
+      // rather than merely returning a same-day cache entry.
+      const response = await fetch("/api/exchange-rates?refresh=1");
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "读取最新汇率失败");
       setExchangeRates(data.rates);
@@ -407,6 +437,7 @@ export default function Dashboard() {
     }
   }
 
+  // removeAsset 删除资产并同步刷新走势数据。
   async function removeAsset(asset: Asset) {
     const response = await fetch(`/api/assets?id=${asset.id}`, { method: "DELETE" });
     if (response.status === 401) {
@@ -421,6 +452,7 @@ export default function Dashboard() {
     setToast(data.snapshot ? "资产已移除，今日历史已更新" : "资产已移除，今日历史暂未更新");
   }
 
+  // updateAsset 保存编辑后的资产市值与定投信息。
   async function updateAsset(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selected) return;
@@ -479,13 +511,14 @@ export default function Dashboard() {
     }
   }
 
+  // logout 结束当前会话并清空前端状态。
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
     setUser(null);
     setAssets([]);
     setMarketRates({});
     setHistory([]);
-    setIncome({ monthly_salary: 0, monthly_savings: 0, updated_at: null });
+    setIncome({ monthly_salary: 0, monthly_savings: 0, annual_bonus: 0, updated_at: null });
     setAssetsLoading(false);
     setSelected(null);
     setExchangeRates({ CNY: 1 });
@@ -561,7 +594,7 @@ export default function Dashboard() {
             <span className="card-kicker">未来收益推演</span>
             <h2>{horizon} 年后，预计拥有</h2>
             <div className="forecast-number">{missingExchangeRate ? "等待汇率" : money(forecast)}</div>
-            <p>按当前组合复利并计入储蓄，预计新增 <b>{missingExchangeRate ? "等待汇率" : money(expectedGain)}</b>{income.monthly_savings > 0 ? `（含储蓄 ${money(savingsContribution)}）` : ""}</p>
+            <p>按当前组合复利并计入储蓄，预计新增 <b>{missingExchangeRate ? "等待汇率" : money(expectedGain)}</b>{income.monthly_savings > 0 || income.annual_bonus > 0 ? `（含储蓄与年终奖 ${money(savingsContribution)}）` : ""}</p>
             <form className="retirement-form" onSubmit={saveRetirement}>
               <div><span className="card-kicker">退休目标资产</span><strong>{retirement?.target_cny ? `${retirement.progress.toFixed(1)}% 已完成` : "添加退休后希望拥有的资产"}</strong>
                 {retirement?.target_cny ? <small>当前 {money(retirement.current_cny)} / 目标 {money(retirement.target_cny)} · {retirement.projected_years === null ? "按当前计划暂无法预计完成时间" : retirement.projected_years === 0 ? "已达成" : `预计 ${retirement.projected_years.toFixed(1)} 年后完成`}</small> : <small>将按当前资产、年化收益率和每月储蓄测算完成时间。</small>}</div>
@@ -574,7 +607,9 @@ export default function Dashboard() {
               <div>
                 <label><span>当前月工资（人民币）</span><input name="monthlySalary" type="number" min="0" step="0.01" required defaultValue={(income.monthly_salary / 100).toFixed(2)} /></label>
                 <label><span>每月预计储蓄额</span><input name="monthlySavings" type="number" min="0" step="0.01" required defaultValue={(income.monthly_savings / 100).toFixed(2)} /></label>
+                <label><span>年终奖（每年计入储蓄）</span><input name="annualBonus" type="number" min="0" step="0.01" required defaultValue={(income.annual_bonus / 100).toFixed(2)} /></label>
               </div>
+              <small className="annual-income">预计年收入 {money(income.monthly_salary * 12 + income.annual_bonus)}</small>
               <button disabled={savingIncome}>{savingIncome ? "保存中…" : "保存工资设置"}</button>
             </form>
             <div className="control-block">
@@ -607,12 +642,12 @@ export default function Dashboard() {
         <section className="assets-section" id="assets">
           <div className="section-heading"><div><span className="card-kicker">我的资产</span><h2>每一笔，都心中有数</h2></div><div className="section-actions"><span>{assets.length} 项资产</span><button className="primary-button compact" onClick={() => setModalOpen(true)}><span>＋</span> 记录资产</button></div></div>
           <div className="filter-row">
-            <button className={activeFilter === "all" ? "active" : ""} onClick={() => setActiveFilter("all")}>全部</button>
-            {(Object.keys(categoryMeta) as Category[]).map((category) => <button className={activeFilter === category ? "active" : ""} key={category} onClick={() => setActiveFilter(category)}>{categoryMeta[category].name}</button>)}
+            <button className={activeFilter === "all" ? "active" : ""} onClick={() => { setActiveFilter("all"); setAssetPage(0); }}>全部</button>
+            {(Object.keys(categoryMeta) as Category[]).map((category) => <button className={activeFilter === category ? "active" : ""} key={category} onClick={() => { setActiveFilter(category); setAssetPage(0); }}>{categoryMeta[category].name}</button>)}
           </div>
           <div className="asset-list">
             {filtered.length === 0 && <div className="empty-assets"><span>＋</span><h3>{activeFilter === "all" ? "账本还是空的" : `还没有${categoryMeta[activeFilter as Category].name}资产`}</h3><p>从记录第一项资产开始，慢慢建立属于你的全资产视图。</p><button className="primary-button" onClick={() => setModalOpen(true)}>记录第一项资产</button></div>}
-            {filtered.map((asset) => {
+            {pagedAssets.map((asset) => {
               const meta = categoryMeta[asset.category];
               const cnyAmount = toCny(asset, exchangeRates);
               return <button className="asset-row" key={asset.id} onClick={() => setSelected(asset)}>
@@ -628,6 +663,11 @@ export default function Dashboard() {
               </button>;
             })}
           </div>
+          {assetPageCount > 1 && <div className="asset-pagination">
+            <button type="button" onClick={() => setAssetPage((page) => Math.max(0, page - 1))} disabled={currentAssetPage === 0}>上一页</button>
+            <span>第 {currentAssetPage + 1} / {assetPageCount} 页</span>
+            <button type="button" onClick={() => setAssetPage((page) => Math.min(assetPageCount - 1, page + 1))} disabled={currentAssetPage >= assetPageCount - 1}>下一页</button>
+          </div>}
         </section>
       </section>
 
@@ -664,6 +704,7 @@ export default function Dashboard() {
   );
 }
 
+// EditableInvestmentFields 根据资产类型展示可编辑的定投字段。
 function EditableInvestmentFields({ asset }: { asset: Asset }) {
   const [strategy, setStrategy] = useState(asset.investment_strategy || "none");
   return <div className="form-two">
@@ -672,22 +713,19 @@ function EditableInvestmentFields({ asset }: { asset: Asset }) {
   </div>;
 }
 
-const HISTORY_PAGE_SIZE = 90;
 const HISTORY_CHART_WIDTH = 680;
 const HISTORY_CHART_HEIGHT = 240;
 const HISTORY_CHART_PADDING_X = 34;
 const HISTORY_CHART_PADDING_Y = 28;
 
 const HistorySection = memo(function HistorySection({ history }: { history: HistoryEntry[] }) {
-  const [page, setPage] = useState(0);
-  const pageCount = Math.max(1, Math.ceil(history.length / HISTORY_PAGE_SIZE));
-  const currentPage = Math.min(page, pageCount - 1);
-  const pageEnd = history.length - currentPage * HISTORY_PAGE_SIZE;
-  const pageStart = Math.max(0, pageEnd - HISTORY_PAGE_SIZE);
   const { rows, chartHistory, min, max, points, totalChange } = useMemo(() => {
-    const visibleHistory = history.slice(pageStart, pageEnd);
-    const rows = visibleHistory.map((entry, index) => {
-      const previous = history[pageStart + index - 1];
+    // Keep the table compact while the chart continues to represent the full
+    // retained history.
+    const listHistory = history.slice(-7);
+    const firstVisibleIndex = Math.max(0, history.length - listHistory.length);
+    const rows = listHistory.map((entry, index) => {
+      const previous = history[firstVisibleIndex + index - 1];
       const change = previous ? entry.total_cny - previous.total_cny : null;
       const changeRate = previous && previous.total_cny ? (change! / previous.total_cny) * 100 : null;
       return { ...entry, change, changeRate };
@@ -705,12 +743,12 @@ const HistorySection = memo(function HistorySection({ history }: { history: Hist
     const latestHistory = history[history.length - 1];
     const totalChange = history.length > 1 ? latestHistory.total_cny - history[0].total_cny : 0;
     return { rows, chartHistory, min, max, points, totalChange };
-  }, [history, pageStart, pageEnd]);
+  }, [history]);
 
   return <section className="history-section" id="history">
     <div className="section-heading history-heading">
       <div><span className="card-kicker">资产历史</span><h2>总资产走过的轨迹</h2></div>
-      <span className="history-count">{history.length} 天记录</span>
+      <span className="history-count">最近 7 天 · 共 {history.length} 天记录</span>
     </div>
     {history.length === 0 ? <div className="history-empty"><strong>还没有历史记录</strong><span>新增、修改或删除资产后，这里会保存当天最后一次总资产。</span></div> : <>
       {history.length >= 2 ? <div className="history-chart-grid">
@@ -740,15 +778,11 @@ const HistorySection = memo(function HistorySection({ history }: { history: Hist
           </tr>)}</tbody>
         </table>
       </div>
-      {pageCount > 1 && <div className="history-pagination">
-        <button type="button" onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))} disabled={currentPage >= pageCount - 1}>上一页</button>
-        <span>第 {currentPage + 1} / {pageCount} 页</span>
-        <button type="button" onClick={() => setPage((current) => Math.max(0, current - 1))} disabled={currentPage <= 0}>下一页</button>
-      </div>}
     </>}
   </section>;
 });
 
+// AssetForm 渲染新增资产的表单并处理类别关联字段。
 function AssetForm({ onSubmit, saving }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; saving: boolean }) {
   const [category, setCategory] = useState<Category>("stock");
   const [currency, setCurrency] = useState<Currency>("CNY");
@@ -774,15 +808,18 @@ function AssetForm({ onSubmit, saving }: { onSubmit: (event: FormEvent<HTMLFormE
   </form>;
 }
 
+// LoadingScreen 在数据或登录状态加载时展示占位界面。
 function LoadingScreen({ label }: { label: string }) {
   return <main className="loading-screen"><div className="loading-mark">复</div><div className="loading-line"><span /></div><p>{label}</p></main>;
 }
 
+// AuthScreen 提供登录和注册入口，并将成功后的用户交给父组件。
 function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: User) => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  // submit 提交登录或注册表单。
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
@@ -811,6 +848,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: User) => void
     }
   }
 
+  // changeMode 切换登录与注册模式，并重置提示信息。
   function changeMode(next: "login" | "register") {
     setMode(next);
     setError("");

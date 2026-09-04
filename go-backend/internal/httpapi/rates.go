@@ -16,6 +16,7 @@ type frankfurterRate struct {
 	Rate              float64
 }
 
+// refreshRates 从汇率服务拉取汇率并更新本地缓存。
 func (a *app) refreshRates() (map[string]float64, string, error) {
 	endpoint := "https://api.frankfurter.dev/v2/rates?" + url.Values{
 		"base": {"USD"}, "quotes": {"CNY,HKD,EUR,JPY,GBP,SGD,AUD,CAD,CHF"},
@@ -80,6 +81,7 @@ func (a *app) refreshRates() (map[string]float64, string, error) {
 	return rates, date, nil
 }
 
+// rates 返回汇率缓存，并在需要时主动刷新。
 func (a *app) rates(w http.ResponseWriter, r *http.Request) {
 	if a.need(w, r) == nil {
 		return
@@ -93,12 +95,27 @@ func (a *app) rates(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, err.Error())
 		return
 	}
-	today := time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
-	stale := date == "" || date < today
+	fresh, err := a.rateCacheFresh(time.Now())
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	stale := !fresh
 	if stale || r.URL.Query().Get("refresh") == "1" {
 		if refreshed, latest, refreshErr := a.refreshRates(); refreshErr == nil {
 			rates, date, stale = refreshed, latest, false
 		}
 	}
 	out(w, 200, map[string]any{"rates": rates, "date": date, "stale": stale, "cached": !stale})
+}
+
+var shanghai = time.FixedZone("CST", 8*3600)
+
+// rateCacheFresh reports whether every supported foreign-currency rate was
+// refreshed after today's 09:15 in Shanghai.  Thus API callers normally use
+// the scheduled 09:16 cache, while an unavailable scheduler can self-heal.
+func (a *app) rateCacheFresh(now time.Time) (bool, error) {
+	local := now.In(shanghai)
+	cutoff := time.Date(local.Year(), local.Month(), local.Day(), 9, 15, 0, 0, shanghai)
+	return a.ledger.RatesCachedSince(cutoff, len(supportedCurrencies))
 }

@@ -7,6 +7,7 @@ type PortfolioAsset = {
 const dateFormatters = new Map<string, Intl.DateTimeFormat>();
 const scheduleCache = new Map<string, Date[]>();
 
+// getDateFormatter 缓存指定时区的日期格式化器。
 function getDateFormatter(timeZone: string) {
   let formatter = dateFormatters.get(timeZone);
   if (!formatter) {
@@ -22,18 +23,22 @@ function getDateFormatter(timeZone: string) {
   return formatter;
 }
 
+// marketTimeZone 根据证券代码推断对应市场时区。
 function marketTimeZone(code: string | null | undefined) {
   return code && /^[A-Z][A-Z0-9.-]*$/i.test(code) ? "America/New_York" : "Asia/Shanghai";
 }
 
+// localDateParts 将日期拆分为目标时区的本地年月日和星期。
 function localDateParts(date: Date, timeZone: string) {
   const parts = getDateFormatter(timeZone).formatToParts(date);
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return { year: Number(values.year), month: Number(values.month), day: Number(values.day), weekday: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(values.weekday) };
 }
 
+// isTradingDay 判断目标时区中的日期是否为工作日交易日。
 function isTradingDay(date: Date, timeZone: string) { const weekday = localDateParts(date, timeZone).weekday; return weekday >= 1 && weekday <= 5; }
 
+// contributionDates 生成指定定投策略在预测区间内的扣款日期。
 function contributionDates(start: Date, end: Date, strategy: InvestmentStrategy, timeZone: string) {
   if (strategy === "none") return [];
   const dates: Date[] = [];
@@ -52,6 +57,7 @@ function contributionDates(start: Date, end: Date, strategy: InvestmentStrategy,
   return dates;
 }
 
+// cachedContributionDates 缓存定投日期计算结果，减少重复预测开销。
 function cachedContributionDates(start: Date, end: Date, strategy: InvestmentStrategy, timeZone: string) {
   const key = `${start.getTime()}:${end.getTime()}:${strategy}:${timeZone}`;
   const cached = scheduleCache.get(key);
@@ -69,6 +75,7 @@ type PreparedInvestment = {
   dates: Date[];
 };
 
+// preparePortfolio 汇总当前资产并计算预测所需的加权收益率。
 function preparePortfolio(
   assets: PortfolioAsset[],
   rates: Partial<Record<string, number>>,
@@ -82,6 +89,7 @@ function preparePortfolio(
   return { total, weightedRate, asOf };
 }
 
+// prepareInvestments 整理基金定投计划及其未来扣款日期。
 function prepareInvestments(assets: PortfolioAsset[], rates: Partial<Record<string, number>>, asOf: Date, maxHorizon: number): PreparedInvestment[] {
   const maxEnd = new Date(asOf);
   maxEnd.setUTCFullYear(maxEnd.getUTCFullYear() + maxHorizon);
@@ -100,7 +108,8 @@ function prepareInvestments(assets: PortfolioAsset[], rates: Partial<Record<stri
   });
 }
 
-function calculateForecast(prepared: ReturnType<typeof preparePortfolio> & object, investments: PreparedInvestment[], horizon: number, monthlySavings: number) {
+// calculateForecast 计算给定年限后的资产预测值和收益构成。
+function calculateForecast(prepared: ReturnType<typeof preparePortfolio> & object, investments: PreparedInvestment[], horizon: number, monthlySavings: number, annualBonus: number) {
   const end = new Date(prepared.asOf); end.setUTCFullYear(end.getUTCFullYear() + horizon);
   const investmentForecast = investments.reduce((sum, investment) => {
     const initial = investment.initial * Math.pow(1 + investment.rate, horizon);
@@ -112,33 +121,37 @@ function calculateForecast(prepared: ReturnType<typeof preparePortfolio> & objec
     }, 0);
     return sum + initial + invested;
   }, 0);
-  const savingsContribution = Math.max(0, monthlySavings) * Math.max(0, horizon) * 12;
+  const savingsContribution = (Math.max(0, monthlySavings) * 12 + Math.max(0, annualBonus)) * Math.max(0, horizon);
   const forecast = investmentForecast + savingsContribution;
   return { total: prepared.total, forecast, expectedGain: forecast - prepared.total, weightedRate: prepared.weightedRate, savingsContribution };
 }
 
+// calculatePortfolioSeries 生成用于资产增长图的逐年预测数据。
 export function calculatePortfolioSeries(
   assets: PortfolioAsset[],
   rates: Partial<Record<string, number>>,
   maxHorizon: number,
   asOf = new Date(),
   monthlySavings = 0,
+  annualBonus = 0,
 ) {
   const prepared = preparePortfolio(assets, rates, asOf);
   if (!prepared) return null;
   const horizon = Math.max(0, Math.floor(maxHorizon));
   const investments = prepareInvestments(assets, rates, asOf, horizon);
-  return Array.from({ length: horizon + 1 }, (_, year) => calculateForecast(prepared, investments, year, monthlySavings));
+  return Array.from({ length: horizon + 1 }, (_, year) => calculateForecast(prepared, investments, year, monthlySavings, annualBonus));
 }
 
+// calculatePortfolio 计算单一预测年限下的资产汇总结果。
 export function calculatePortfolio(
   assets: PortfolioAsset[],
   rates: Partial<Record<string, number>>,
   horizon: number,
   asOf = new Date(),
   monthlySavings = 0,
+  annualBonus = 0,
 ) {
-  const series = calculatePortfolioSeries(assets, rates, horizon, asOf, monthlySavings);
+  const series = calculatePortfolioSeries(assets, rates, horizon, asOf, monthlySavings, annualBonus);
   if (!series) return null;
   return series[Math.max(0, Math.floor(horizon))] ?? series[0];
 }

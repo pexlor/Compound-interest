@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// retirement 处理退休目标资产的查询、新增和删除请求。
 func (a *app) retirement(w http.ResponseWriter, r *http.Request) {
 	u := a.need(w, r)
 	if u == nil {

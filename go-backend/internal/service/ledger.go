@@ -10,15 +10,18 @@ import (
 
 type Ledger struct{ db *sql.DB }
 
+// NewLedger 创建账本服务，并注入数据库依赖。
 func NewLedger(db *sql.DB) *Ledger { return &Ledger{db: db} }
 
 type Income struct {
 	MonthlySalary  int64  `json:"monthly_salary"`
 	MonthlySavings int64  `json:"monthly_savings"`
+	AnnualBonus    int64  `json:"annual_bonus"`
 	UpdatedAt      string `json:"updated_at"`
 }
 
-// Snapshot persists the user's total using the latest complete local exchange-rate set.
+// Snapshot 按当前汇率汇总资产并写入当天的历史快照。
+// 它使用本地最新且完整的汇率集持久化用户资产总额。
 // It is deliberately transactional so an asset mutation cannot leave a partial history row.
 func (s *Ledger) Snapshot(userID int64, trigger string) (bool, error) {
 	tx, err := s.db.Begin()
@@ -80,6 +83,7 @@ ON CONFLICT(user_id,snapshot_date) DO UPDATE SET total_cny=excluded.total_cny,tr
 	return true, nil
 }
 
+// LatestRates 读取本地缓存的各币种兑人民币汇率及最新日期。
 func (s *Ledger) LatestRates() (map[string]float64, string, error) {
 	rates := map[string]float64{"CNY": 1}
 	date := ""
@@ -102,6 +106,95 @@ func (s *Ledger) LatestRates() (map[string]float64, string, error) {
 	return rates, date, rows.Err()
 }
 
+// RatesCachedSince reports whether the complete non-CNY rate cache was written
+// at or after since.  The market's quote date is intentionally not used here:
+// it does not advance on weekends and holidays even when the cache was just
+// refreshed.
+func (s *Ledger) RatesCachedSince(since time.Time, expectedCurrencies int) (bool, error) {
+	var count int
+	var oldest sql.NullString
+	if err := s.db.QueryRow(`SELECT COUNT(*), MIN(updated_at) FROM exchange_rates`).Scan(&count, &oldest); err != nil {
+		return false, err
+	}
+	if count != expectedCurrencies || !oldest.Valid {
+		return false, nil
+	}
+	updated, err := time.ParseInLocation("2006-01-02 15:04:05", oldest.String, time.UTC)
+	if err != nil {
+		return false, err
+	}
+	return !updated.Before(since.UTC()), nil
+}
+
+// SnapshotAll writes one daily snapshot per registered user.  A failure for
+// one account is returned while the other accounts are still attempted.
+func (s *Ledger) SnapshotAll(trigger string) error {
+	rows, err := s.db.Query("SELECT id FROM users ORDER BY id")
+	if err != nil {
+		return err
+	}
+	var userIDs []int64
+	for rows.Next() {
+		var userID int64
+		if err := rows.Scan(&userID); err != nil {
+			rows.Close()
+			return err
+		}
+		userIDs = append(userIDs, userID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	var firstErr error
+	for _, userID := range userIDs {
+		if _, err := s.Snapshot(userID, trigger); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// SnapshotMissingTodayAll fills in today's snapshot for accounts that do not
+// have one yet.  It lets a server started after the scheduled run recover
+// without replacing a snapshot already captured earlier in the day.
+func (s *Ledger) SnapshotMissingTodayAll(trigger string) error {
+	date := time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
+	rows, err := s.db.Query(`SELECT u.id FROM users u
+		WHERE NOT EXISTS (SELECT 1 FROM asset_history h WHERE h.user_id=u.id AND h.snapshot_date=?)
+		ORDER BY u.id`, date)
+	if err != nil {
+		return err
+	}
+	var userIDs []int64
+	for rows.Next() {
+		var userID int64
+		if err := rows.Scan(&userID); err != nil {
+			rows.Close()
+			return err
+		}
+		userIDs = append(userIDs, userID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	var firstErr error
+	for _, userID := range userIDs {
+		if _, err := s.Snapshot(userID, trigger); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// History 按时间顺序读取指定数量的资产历史快照。
 func (s *Ledger) History(userID int64, limit int) ([]map[string]any, error) {
 	rows, err := s.db.Query(`SELECT id,user_id,snapshot_date,total_cny,trigger,rate_date,created_at,updated_at FROM (SELECT id,user_id,snapshot_date,total_cny,trigger,rate_date,created_at,updated_at FROM asset_history WHERE user_id=? ORDER BY snapshot_date DESC LIMIT ?) ORDER BY snapshot_date ASC`, userID, limit)
 	if err != nil {
@@ -121,6 +214,7 @@ func (s *Ledger) History(userID int64, limit int) ([]map[string]any, error) {
 	return result, rows.Err()
 }
 
+// nullable 将可空字符串转换为便于 JSON 序列化的值。
 func nullable(v sql.NullString) any {
 	if v.Valid {
 		return v.String
@@ -144,7 +238,8 @@ type RetirementItem struct {
 	Currency string `json:"currency"`
 }
 
-// Retirement calculates the target progress and simulates monthly compounding
+// Retirement 汇总退休目标、当前资产和预计达成时间。
+// 它计算目标进度，并模拟按月复利和计划储蓄后的达成时间。
 // with the user's weighted asset rate and planned monthly savings.
 func (s *Ledger) Retirement(userID int64) (Retirement, error) {
 	var out Retirement
@@ -225,6 +320,9 @@ func (s *Ledger) Retirement(userID int64) (Retirement, error) {
 	monthlyRate := out.AnnualRate / 100 / 12
 	for month := 1; month <= 1200; month++ {
 		balance = balance*(1+monthlyRate) + float64(income.MonthlySavings)
+		if month%12 == 0 {
+			balance += float64(income.AnnualBonus)
+		}
 		if balance >= float64(out.TargetCNY) {
 			years := float64(month) / 12
 			out.ProjectedYears = &years
@@ -234,6 +332,7 @@ func (s *Ledger) Retirement(userID int64) (Retirement, error) {
 	return out, nil
 }
 
+// SaveRetirementTarget 保存兼容旧数据的单一退休金额目标。
 func (s *Ledger) SaveRetirementTarget(userID, targetCNY int64) (Retirement, error) {
 	_, err := s.db.Exec(`INSERT INTO retirement_goals(user_id,target_cny,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
 ON CONFLICT(user_id) DO UPDATE SET target_cny=excluded.target_cny,updated_at=CURRENT_TIMESTAMP`, userID, targetCNY)
@@ -243,6 +342,7 @@ ON CONFLICT(user_id) DO UPDATE SET target_cny=excluded.target_cny,updated_at=CUR
 	return s.Retirement(userID)
 }
 
+// AddRetirementItem 新增一项退休目标资产并返回最新汇总。
 func (s *Ledger) AddRetirementItem(userID int64, name, category string, amount int64, currency string) (Retirement, error) {
 	_, err := s.db.Exec("INSERT INTO retirement_goal_items(user_id,name,category,amount,currency) VALUES(?,?,?,?,?)", userID, name, category, amount, currency)
 	if err != nil {
@@ -250,6 +350,8 @@ func (s *Ledger) AddRetirementItem(userID int64, name, category string, amount i
 	}
 	return s.Retirement(userID)
 }
+
+// DeleteRetirementItem 删除用户的一项退休目标资产并返回最新汇总。
 func (s *Ledger) DeleteRetirementItem(userID, id int64) (Retirement, error) {
 	_, err := s.db.Exec("DELETE FROM retirement_goal_items WHERE id=? AND user_id=?", id, userID)
 	if err != nil {
@@ -258,25 +360,28 @@ func (s *Ledger) DeleteRetirementItem(userID, id int64) (Retirement, error) {
 	return s.Retirement(userID)
 }
 
-// Income returns the user's persisted planning settings. A missing row is a
+// Income 读取用户的收入与储蓄规划设置。
+// 缺少记录时返回空设置，而非交给 HTTP 层做特殊处理。
 // valid empty setting, rather than an HTTP-layer special case.
 func (s *Ledger) Income(userID int64) (Income, error) {
 	var result Income
-	err := s.db.QueryRow("SELECT monthly_salary, monthly_savings, updated_at FROM income_settings WHERE user_id = ?", userID).
-		Scan(&result.MonthlySalary, &result.MonthlySavings, &result.UpdatedAt)
+	err := s.db.QueryRow("SELECT monthly_salary, monthly_savings, annual_bonus, updated_at FROM income_settings WHERE user_id = ?", userID).
+		Scan(&result.MonthlySalary, &result.MonthlySavings, &result.AnnualBonus, &result.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return Income{}, nil
 	}
 	return result, err
 }
 
-// SaveIncome is the income-settings use case; persistence and upsert semantics
+// SaveIncome 保存用户的收入与储蓄规划设置。
+// 持久化和 upsert 语义封装在业务层，不泄漏给 HTTP 处理器。
 // do not leak into an HTTP handler.
-func (s *Ledger) SaveIncome(userID, monthlySalary, monthlySavings int64) (Income, error) {
-	_, err := s.db.Exec(`INSERT INTO income_settings(user_id, monthly_salary, monthly_savings, updated_at)
-VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+func (s *Ledger) SaveIncome(userID, monthlySalary, monthlySavings, annualBonus int64) (Income, error) {
+	_, err := s.db.Exec(`INSERT INTO income_settings(user_id, monthly_salary, monthly_savings, annual_bonus, updated_at)
+VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
 ON CONFLICT(user_id) DO UPDATE SET monthly_salary=excluded.monthly_salary,
-monthly_savings=excluded.monthly_savings, updated_at=CURRENT_TIMESTAMP`, userID, monthlySalary, monthlySavings)
+monthly_savings=excluded.monthly_savings, annual_bonus=excluded.annual_bonus,
+updated_at=CURRENT_TIMESTAMP`, userID, monthlySalary, monthlySavings, annualBonus)
 	if err != nil {
 		return Income{}, err
 	}

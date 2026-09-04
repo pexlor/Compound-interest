@@ -38,7 +38,7 @@ type asset struct {
 	CreatedAt          string   `json:"created_at"`
 }
 
-// New wires the API routes to an already-initialized database.
+// New 创建 API 应用并注册所有路由。
 func New(db *sql.DB) http.Handler {
 	a := &app{db: db, ledger: service.NewLedger(db)}
 	mux := http.NewServeMux()
@@ -56,6 +56,8 @@ func New(db *sql.DB) http.Handler {
 	mux.HandleFunc("/api/market", a.market)
 	return a.headers(mux)
 }
+
+// headers 为所有 API 响应补充统一的 JSON 和禁止缓存头。
 func (a *app) headers(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -63,19 +65,27 @@ func (a *app) headers(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// out 以指定状态码输出 JSON 响应。
 func out(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// fail 以统一结构输出错误响应。
 func fail(w http.ResponseWriter, status int, msg string) {
 	out(w, status, map[string]string{"error": msg})
 }
+
+// body 限制请求体大小并严格解析 JSON 数据。
 func body(r *http.Request, v any) error {
 	defer r.Body.Close()
 	d := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20))
 	d.DisallowUnknownFields()
 	return d.Decode(v)
 }
+
+// health 返回服务健康检查结果。
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
 	out(w, 200, map[string]bool{"ok": true})
 }

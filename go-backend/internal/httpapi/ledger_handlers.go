@@ -6,6 +6,7 @@ import (
 	"strconv"
 )
 
+// income 处理收入设置的读取和保存请求。
 func (a *app) income(w http.ResponseWriter, r *http.Request) {
 	u := a.need(w, r)
 	if u == nil {
@@ -24,19 +25,21 @@ func (a *app) income(w http.ResponseWriter, r *http.Request) {
 		fail(w, 405, "方法不允许")
 		return
 	}
-	var x struct{ MonthlySalary, MonthlySavings float64 }
-	if body(r, &x) != nil || x.MonthlySalary < 0 || x.MonthlySavings < 0 || x.MonthlySalary > maxMoney || x.MonthlySavings > maxMoney {
-		fail(w, 400, "请输入有效的工资和预计储蓄额")
+	var x struct{ MonthlySalary, MonthlySavings, AnnualBonus float64 }
+	if body(r, &x) != nil || x.MonthlySalary < 0 || x.MonthlySavings < 0 || x.AnnualBonus < 0 || x.MonthlySalary > maxMoney || x.MonthlySavings > maxMoney || x.AnnualBonus > maxMoney {
+		fail(w, 400, "请输入有效的工资、储蓄额和年终奖")
 		return
 	}
-	s, ss := int64(math.Round(x.MonthlySalary*100)), int64(math.Round(x.MonthlySavings*100))
-	income, e := a.ledger.SaveIncome(u.ID, s, ss)
+	s, ss, bonus := int64(math.Round(x.MonthlySalary*100)), int64(math.Round(x.MonthlySavings*100)), int64(math.Round(x.AnnualBonus*100))
+	income, e := a.ledger.SaveIncome(u.ID, s, ss, bonus)
 	if e != nil {
 		fail(w, 500, e.Error())
 		return
 	}
 	out(w, 200, map[string]any{"income": income})
 }
+
+// history 处理资产历史快照的查询和手动记录请求。
 func (a *app) history(w http.ResponseWriter, r *http.Request) {
 	u := a.need(w, r)
 	if u == nil {
@@ -69,11 +72,17 @@ func (a *app) history(w http.ResponseWriter, r *http.Request) {
 	}
 	out(w, 200, map[string]any{"history": v})
 }
+
+// dashboard 聚合仪表盘首次加载所需的数据。
 func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 	u := a.need(w, r)
 	if u == nil {
 		return
 	}
+	// Opening the dashboard is also a useful observation point for the user's
+	// current total.  The daily uniqueness constraint makes repeated opens
+	// update today's single row instead of creating duplicates.
+	snapshotRecorded, _ := a.ledger.Snapshot(u.ID, "dashboard_open")
 	assets, e := a.listAssets(u.ID)
 	if e != nil {
 		fail(w, 500, e.Error())
@@ -94,5 +103,5 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, e.Error())
 		return
 	}
-	out(w, 200, map[string]any{"user": u, "assets": assets, "history": history, "income": income, "rates": rates, "date": date, "stale": date == ""})
+	out(w, 200, map[string]any{"user": u, "assets": assets, "history": history, "income": income, "rates": rates, "date": date, "stale": date == "", "snapshotRecorded": snapshotRecorded})
 }

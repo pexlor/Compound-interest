@@ -9,6 +9,7 @@ import (
 	"fulibu-go/internal/database"
 )
 
+// main 解析迁移参数并执行旧版数据导入。
 func main() {
 	legacy := flag.String("legacy", "", "path to the previous D1 SQLite database")
 	dataDir := flag.String("data-dir", "./data", "directory for fulibu.db")

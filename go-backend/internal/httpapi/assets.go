@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+// scanAsset 将数据库查询结果扫描为资产实体。
 func scanAsset(s interface{ Scan(...any) error }) (asset, error) {
 	var x asset
 	e := s.Scan(&x.ID, &x.UserID, &x.Name, &x.Category, &x.Code, &x.Amount, &x.Quantity, &x.Currency, &x.AnnualRate, &x.InvestmentStrategy, &x.InvestmentAmount, &x.Note, &x.CreatedAt)
@@ -16,6 +17,7 @@ func scanAsset(s interface{ Scan(...any) error }) (asset, error) {
 
 const assetCols = "id,user_id,name,category,code,amount,quantity,currency,annual_rate,investment_strategy,investment_amount,note,created_at"
 
+// listAssets 读取用户的全部资产。
 func (a *app) listAssets(id int64) ([]asset, error) {
 	rows, e := a.db.Query("SELECT "+assetCols+" FROM assets WHERE user_id=? ORDER BY id", id)
 	if e != nil {
@@ -32,12 +34,16 @@ func (a *app) listAssets(id int64) ([]asset, error) {
 	}
 	return v, rows.Err()
 }
+
+// money 校验金额并转换为以分为单位的整数。
 func money(n float64) (int64, bool) {
 	if math.IsNaN(n) || math.IsInf(n, 0) || n <= 0 || n > maxMoney {
 		return 0, false
 	}
 	return int64(math.Round(n * 100)), true
 }
+
+// currency 判断币种是否在系统支持范围内。
 func currency(s string) bool {
 	switch s {
 	case "CNY", "USD", "HKD", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "CHF":
@@ -45,6 +51,8 @@ func currency(s string) bool {
 	}
 	return false
 }
+
+// assets 分派资产的查询、新增、更新和删除请求。
 func (a *app) assets(w http.ResponseWriter, r *http.Request) {
 	u := a.need(w, r)
 	if u == nil {
@@ -87,6 +95,8 @@ func (a *app) assets(w http.ResponseWriter, r *http.Request) {
 		fail(w, 405, "方法不允许")
 	}
 }
+
+// addAsset 校验并创建一项资产，同时记录历史快照。
 func (a *app) addAsset(w http.ResponseWriter, r *http.Request, u *user) {
 	var x struct {
 		Name, Category, Code, Currency, Note, InvestmentStrategy string
@@ -153,12 +163,16 @@ func (a *app) addAsset(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	out(w, 201, map[string]any{"asset": row, "snapshot": snapshot})
 }
+
+// nullString 将空字符串转换为数据库 NULL。
 func nullString(s string) any {
 	if s == "" {
 		return nil
 	}
 	return s
 }
+
+// patchAsset 更新资产市值、持有数量、币种和定投设置。
 func (a *app) patchAsset(w http.ResponseWriter, r *http.Request, u *user) {
 	var x struct {
 		ID                 int64    `json:"id"`

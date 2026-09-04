@@ -11,6 +11,7 @@ import (
 )
 
 // Open creates the local database and applies idempotent schema migrations.
+// Open 打开 SQLite 数据库，并初始化应用所需的表结构。
 func Open(dataDir string) (*sql.DB, error) {
 	if err := os.MkdirAll(dataDir, 0750); err != nil {
 		return nil, err
@@ -24,14 +25,46 @@ func Open(dataDir string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = ensureColumn(db, "income_settings", "annual_bonus", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+// ensureColumn 在迁移期间确保指定表包含目标字段。
+func ensureColumn(db *sql.DB, table, column, definition string) error {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	_, err = db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition)
+	return err
 }
 
 const schema = `PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT NOT NULL UNIQUE,display_name TEXT NOT NULL,password_hash TEXT NOT NULL,password_salt TEXT NOT NULL,password_iterations INTEGER NOT NULL DEFAULT 210000,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,expires_at INTEGER NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS assets(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,name TEXT NOT NULL,category TEXT NOT NULL,code TEXT,amount INTEGER NOT NULL,quantity REAL,currency TEXT NOT NULL DEFAULT 'CNY',annual_rate REAL NOT NULL DEFAULT 0,investment_strategy TEXT NOT NULL DEFAULT 'none',investment_amount INTEGER,note TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-CREATE TABLE IF NOT EXISTS income_settings(user_id INTEGER PRIMARY KEY,monthly_salary INTEGER NOT NULL DEFAULT 0,monthly_savings INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS income_settings(user_id INTEGER PRIMARY KEY,monthly_salary INTEGER NOT NULL DEFAULT 0,monthly_savings INTEGER NOT NULL DEFAULT 0,annual_bonus INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS retirement_goals(user_id INTEGER PRIMARY KEY,target_cny INTEGER NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS retirement_goal_items(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,category TEXT NOT NULL,amount INTEGER NOT NULL,currency TEXT NOT NULL DEFAULT 'CNY',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS exchange_rates(currency TEXT PRIMARY KEY,cny_rate REAL NOT NULL,rate_date TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -42,7 +75,8 @@ CREATE INDEX IF NOT EXISTS assets_user_id_idx ON assets(user_id);
 CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS market_returns_lookup_idx ON market_returns(category,code,lookback_days,calculation_date);`
 
-// ImportLegacy copies the persisted application tables from the previous
+// ImportLegacy 从旧版 D1 SQLite 数据库幂等导入应用数据。
+// 它复制旧服务中已持久化的应用表，而不会修改源数据库。
 // Miniflare/D1 SQLite file. It is safe to run repeatedly: existing rows are
 // retained and the source database is never modified.
 func ImportLegacy(db *sql.DB, legacyPath string) error {

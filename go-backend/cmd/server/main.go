@@ -3,16 +3,21 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"fulibu-go/internal/database"
 	"fulibu-go/internal/httpapi"
 )
 
+// main 启动应用并加载运行所需的配置。
 func main() {
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
@@ -31,10 +36,23 @@ func main() {
 	api := httpapi.New(db)
 	handler := serveApp(api, os.Getenv("STATIC_DIR"))
 	log.Printf("Fulibu listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, handler))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	httpapi.StartDailyJobs(ctx, db)
+	server := &http.Server{Addr: ":" + port, Handler: handler}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
 }
 
-// serveApp makes the API and the Vite single-page application available from
+// serveApp 将 API 与前端单页应用托管在同一来源下。
+// 它将 API 与 Vite 单页应用发布到同一个来源，避免浏览器 Cookie 跨域。
 // one origin. This avoids a second proxy process and keeps browser cookies
 // same-origin in the native deployment.
 func serveApp(api http.Handler, staticDir string) http.Handler {

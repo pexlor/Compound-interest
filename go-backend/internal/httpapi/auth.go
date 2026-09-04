@@ -13,15 +13,20 @@ import (
 	"time"
 )
 
+// token 生成安全的随机会话令牌。
 func token() string {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
 }
+
+// digest 计算会话令牌的 SHA-256 摘要以便安全存储。
 func digest(s string) string {
 	x := sha256.Sum256([]byte(s))
 	return base64.StdEncoding.EncodeToString(x[:])
 }
+
+// password 使用 PBKDF2 派生密码哈希。
 func password(p, salt string, n int) string {
 	key, err := pbkdf2.Key(sha256.New, p, must64(salt), n, 32)
 	if err != nil {
@@ -29,7 +34,11 @@ func password(p, salt string, n int) string {
 	}
 	return base64.StdEncoding.EncodeToString(key)
 }
+
+// must64 解码 Base64 字符串；仅用于已验证的内部盐值。
 func must64(s string) []byte { v, _ := base64.StdEncoding.DecodeString(s); return v }
+
+// current 根据会话 Cookie 查询当前登录用户。
 func (a *app) current(r *http.Request) (*user, error) {
 	c, e := r.Cookie(sessionName)
 	if e != nil {
@@ -42,6 +51,8 @@ func (a *app) current(r *http.Request) (*user, error) {
 	}
 	return &u, e
 }
+
+// need 获取当前用户；未登录时直接返回认证错误。
 func (a *app) need(w http.ResponseWriter, r *http.Request) *user {
 	u, e := a.current(r)
 	if e != nil {
@@ -53,12 +64,16 @@ func (a *app) need(w http.ResponseWriter, r *http.Request) *user {
 	}
 	return u
 }
+
+// setSession 创建 30 天有效的会话并写入安全 Cookie。
 func (a *app) setSession(w http.ResponseWriter, id int64) {
 	t := token()
 	_, _ = a.db.Exec("DELETE FROM sessions WHERE expires_at<=?", time.Now().Unix())
 	_, _ = a.db.Exec("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)", digest(t), id, time.Now().Add(30*24*time.Hour).Unix())
 	http.SetCookie(w, &http.Cookie{Name: sessionName, Value: t, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 2592000})
 }
+
+// register 处理用户注册请求。
 func (a *app) register(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		fail(w, 405, "方法不允许")
@@ -81,6 +96,8 @@ func (a *app) register(w http.ResponseWriter, r *http.Request) {
 	a.setSession(w, id)
 	out(w, 201, map[string]any{"user": user{id, strings.ToLower(strings.TrimSpace(x.Email)), strings.TrimSpace(x.DisplayName)}})
 }
+
+// login 校验凭据并创建登录会话。
 func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		fail(w, 405, "方法不允许")
@@ -102,6 +119,8 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	a.setSession(w, id)
 	out(w, 200, map[string]any{"user": user{id, email, name}})
 }
+
+// logout 删除当前会话并清除浏览器 Cookie。
 func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		fail(w, 405, "方法不允许")
@@ -113,6 +132,8 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: sessionName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 	out(w, 200, map[string]bool{"ok": true})
 }
+
+// me 返回当前登录用户资料。
 func (a *app) me(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		fail(w, 405, "方法不允许")
