@@ -228,7 +228,12 @@ func (a *app) refreshMarketAssetValues(userID int64) error {
 func fetchTencentHistory(client *http.Client, symbol string, days int) ([]json.RawMessage, error) {
 	parameter := fmt.Sprintf("%s,day,,,%d,qfq", symbol, days+10)
 	endpoint := "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?" + url.Values{"param": {parameter}}.Encode()
-	response, err := client.Get(endpoint)
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("User-Agent", "Mozilla/5.0")
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +293,12 @@ func fetchUSMarket(client *http.Client, code string, days int, current float64, 
 	end := time.Now().Unix() + 86400
 	start := end - int64(days+45)*86400
 	endpoint := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s?period1=%d&period2=%d&interval=1d&events=div,splits&includeAdjustedClose=true", url.PathEscape(strings.ReplaceAll(ticker, ".", "-")), start, end)
-	response, err := client.Get(endpoint)
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return marketResult{}, err
+	}
+	request.Header.Set("User-Agent", "Mozilla/5.0")
+	response, err := client.Do(request)
 	if err != nil {
 		return marketResult{}, err
 	}
