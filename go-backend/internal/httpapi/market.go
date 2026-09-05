@@ -134,6 +134,68 @@ func quoteDate(value string) string {
 	return ""
 }
 
+func isExchangeFund(code string) bool {
+	return len(code) == 6 && allDigits(code) && (strings.HasPrefix(code, "51") || strings.HasPrefix(code, "52") || strings.HasPrefix(code, "56") || strings.HasPrefix(code, "58") || strings.HasPrefix(code, "15") || strings.HasPrefix(code, "16"))
+}
+
+func isUSSecurity(code string) bool {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if strings.HasPrefix(code, "US") && len(code) > 2 {
+		return true
+	}
+	return code != "" && !allDigits(code) && !strings.HasPrefix(code, "SH") && !strings.HasPrefix(code, "SZ") && !strings.HasSuffix(code, ".HK")
+}
+
+// fetchFundQuote restores the old Eastmoney source for off-exchange funds.
+func fetchFundQuote(client *http.Client, code string) (float64, string, error) {
+	endpoint := "https://api.fund.eastmoney.com/f10/lsjz?" + url.Values{"fundCode": {code}, "pageIndex": {"1"}, "pageSize": {"1"}}.Encode()
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	request.Header.Set("Referer", "https://fundf10.eastmoney.com/")
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return 0, "", fmt.Errorf("东方财富基金服务返回 HTTP %d", response.StatusCode)
+	}
+	var payload struct {
+		Data struct {
+			List []struct {
+				Date string `json:"FSRQ"`
+				NAV  string `json:"DWJZ"`
+			} `json:"LSJZList"`
+		} `json:"Data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
+		return 0, "", err
+	}
+	if len(payload.Data.List) == 0 {
+		return 0, "", fmt.Errorf("没有找到基金 %s 的最新净值", code)
+	}
+	price, err := strconv.ParseFloat(payload.Data.List[0].NAV, 64)
+	if err != nil || price <= 0 {
+		return 0, "", fmt.Errorf("基金 %s 的最新净值无效", code)
+	}
+	return price, payload.Data.List[0].Date, nil
+}
+
+func fetchLiveQuote(client *http.Client, category, code string) (float64, string, string, error) {
+	if category == "fund" && !isExchangeFund(code) && !isUSSecurity(code) {
+		price, date, err := fetchFundQuote(client, code)
+		return price, "CNY", date, err
+	}
+	symbol, currency, err := tencentSymbol(category, code)
+	if err != nil {
+		return 0, "", "", err
+	}
+	price, date, err := fetchTencentQuote(client, symbol)
+	return price, currency, date, err
+}
+
 // refreshMarketAssetValues writes the latest quote into every quantity-based
 // asset before a portfolio snapshot is calculated. A quote failure leaves its
 // most recently saved valuation intact, so one unavailable symbol cannot
@@ -148,11 +210,7 @@ func (a *app) refreshMarketAssetValues(userID int64) error {
 		if (asset.Category != "stock" && asset.Category != "fund") || asset.Code == nil || asset.Quantity == nil || *asset.Quantity <= 0 {
 			continue
 		}
-		symbol, quoteCurrency, err := tencentSymbol(asset.Category, *asset.Code)
-		if err != nil {
-			continue
-		}
-		price, _, err := fetchTencentQuote(client, symbol)
+		price, quoteCurrency, _, err := fetchLiveQuote(client, asset.Category, *asset.Code)
 		if err != nil {
 			continue
 		}
@@ -218,17 +276,180 @@ func tencentHistoryPoints(rows []json.RawMessage, cutoff time.Time) []marketPoin
 	return points
 }
 
+func annualized(first, last marketPoint) float64 {
+	years := math.Max(1/365.25, float64(last.at.Sub(first.at).Hours())/(24*365.25))
+	return (math.Pow(last.price/first.price, 1/years) - 1) * 100
+}
+
+// fetchUSMarket restores Yahoo Finance adjusted closes for US historical
+// returns, and converts both endpoints with Frankfurter USD/CNY history.
+func fetchUSMarket(client *http.Client, code string, days int, current float64, priceDate string) (marketResult, error) {
+	ticker := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(code)), "US")
+	end := time.Now().Unix() + 86400
+	start := end - int64(days+45)*86400
+	endpoint := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s?period1=%d&period2=%d&interval=1d&events=div,splits&includeAdjustedClose=true", url.PathEscape(strings.ReplaceAll(ticker, ".", "-")), start, end)
+	response, err := client.Get(endpoint)
+	if err != nil {
+		return marketResult{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return marketResult{}, fmt.Errorf("Yahoo Finance 返回 HTTP %d", response.StatusCode)
+	}
+	var payload struct {
+		Chart struct {
+			Result []struct {
+				Timestamp  []int64 `json:"timestamp"`
+				Indicators struct {
+					AdjClose []struct {
+						Values []*float64 `json:"adjclose"`
+					} `json:"adjclose"`
+				} `json:"indicators"`
+			} `json:"result"`
+		} `json:"chart"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&payload); err != nil {
+		return marketResult{}, err
+	}
+	if len(payload.Chart.Result) == 0 || len(payload.Chart.Result[0].Indicators.AdjClose) == 0 {
+		return marketResult{}, fmt.Errorf("没有找到美股 %s 的复权历史行情", ticker)
+	}
+	result := payload.Chart.Result[0]
+	points := []marketPoint{}
+	for i, timestamp := range result.Timestamp {
+		if i >= len(result.Indicators.AdjClose[0].Values) || result.Indicators.AdjClose[0].Values[i] == nil || *result.Indicators.AdjClose[0].Values[i] <= 0 {
+			continue
+		}
+		points = append(points, marketPoint{price: *result.Indicators.AdjClose[0].Values[i], at: time.Unix(timestamp, 0).UTC()})
+	}
+	if len(points) < 2 {
+		return marketResult{}, fmt.Errorf("美股 %s 的复权历史行情不足", ticker)
+	}
+	last := points[len(points)-1]
+	cutoff := last.at.AddDate(0, 0, -days)
+	first := points[0]
+	limited := true
+	for _, point := range points {
+		if !point.at.After(cutoff) {
+			first, limited = point, false
+		}
+	}
+	startRate, err := fetchHistoricalUSDCNY(client, first.at.Format("2006-01-02"))
+	if err != nil {
+		return marketResult{}, err
+	}
+	endRate, err := fetchHistoricalUSDCNY(client, last.at.Format("2006-01-02"))
+	if err != nil {
+		return marketResult{}, err
+	}
+	first.price *= startRate
+	last.price *= endRate
+	actualDays := int(last.at.Sub(first.at).Hours() / 24)
+	return marketResult{Code: strings.ToUpper(code), AnnualRate: annualized(first, last), RequestedDays: days, ActualDays: actualDays, HistoryLimited: limited, StartDate: first.at.Format("2006-01-02"), EndDate: last.at.Format("2006-01-02"), CalculationDate: time.Now().In(shanghai).Format("2006-01-02"), CurrentPrice: current, PriceCurrency: "USD", PriceDate: priceDate, Source: "Yahoo Finance 复权收盘价（人民币汇率调整）"}, nil
+}
+
+func fetchHistoricalUSDCNY(client *http.Client, date string) (float64, error) {
+	at, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return 0, err
+	}
+	endpoint := "https://api.frankfurter.dev/v2/rates?" + url.Values{"base": {"USD"}, "quotes": {"CNY"}, "from": {at.AddDate(0, 0, -7).Format("2006-01-02")}, "to": {date}}.Encode()
+	response, err := client.Get(endpoint)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("Frankfurter 返回 HTTP %d", response.StatusCode)
+	}
+	var rows []struct {
+		Date, Base, Quote string
+		Rate              float64
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&rows); err != nil {
+		return 0, err
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].Base == "USD" && rows[i].Quote == "CNY" && rows[i].Rate > 0 {
+			return rows[i].Rate, nil
+		}
+	}
+	return 0, fmt.Errorf("没有找到 %s 的 USD/CNY 历史汇率", date)
+}
+
+func fetchFundMarket(client *http.Client, code string, days int, current float64, priceDate string) (marketResult, error) {
+	endpoint := "https://api.fund.eastmoney.com/f10/lsjz?" + url.Values{"fundCode": {code}, "pageIndex": {"1"}, "pageSize": {"100"}}.Encode()
+	request, _ := http.NewRequest(http.MethodGet, endpoint, nil)
+	request.Header.Set("Referer", "https://fundf10.eastmoney.com/")
+	response, err := client.Do(request)
+	if err != nil {
+		return marketResult{}, err
+	}
+	defer response.Body.Close()
+	var payload struct {
+		Data struct {
+			List []struct {
+				Date     string `json:"FSRQ"`
+				NAV      string `json:"DWJZ"`
+				TotalNAV string `json:"LJJZ"`
+			} `json:"LSJZList"`
+		} `json:"Data"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload) != nil || len(payload.Data.List) < 2 {
+		return marketResult{}, fmt.Errorf("东方财富基金历史净值不可用")
+	}
+	latestRow := payload.Data.List[0]
+	latestDate, err := time.Parse("2006-01-02", latestRow.Date)
+	if err != nil {
+		return marketResult{}, err
+	}
+	target := latestDate.AddDate(0, 0, -days)
+	oldest := payload.Data.List[len(payload.Data.List)-1]
+	limited := true
+	for _, row := range payload.Data.List {
+		date, e := time.Parse("2006-01-02", row.Date)
+		if e == nil && !date.After(target) {
+			oldest, limited = row, false
+			break
+		}
+	}
+	start, _ := strconv.ParseFloat(firstNonEmpty(oldest.TotalNAV, oldest.NAV), 64)
+	end, _ := strconv.ParseFloat(firstNonEmpty(latestRow.TotalNAV, latestRow.NAV), 64)
+	if start <= 0 || end <= 0 {
+		return marketResult{}, fmt.Errorf("东方财富基金净值无效")
+	}
+	firstDate, _ := time.Parse("2006-01-02", oldest.Date)
+	last := marketPoint{price: end, at: latestDate}
+	first := marketPoint{price: start, at: firstDate}
+	return marketResult{Code: strings.ToUpper(code), AnnualRate: annualized(first, last), RequestedDays: days, ActualDays: int(latestDate.Sub(firstDate).Hours() / 24), HistoryLimited: limited, StartDate: oldest.Date, EndDate: latestRow.Date, CalculationDate: time.Now().In(shanghai).Format("2006-01-02"), CurrentPrice: current, PriceCurrency: "CNY", PriceDate: priceDate, Source: "东方财富历史净值"}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // fetchMarket uses Tencent Finance for both live quotes and daily history.
 func fetchMarket(category, code string, days int) (marketResult, error) {
 	if days < 1 || days > 3650 {
 		return marketResult{}, fmt.Errorf("不支持的历史区间")
 	}
-	symbol, currency, err := tencentSymbol(category, code)
+	client := &http.Client{Timeout: 12 * time.Second}
+	current, currency, priceDate, err := fetchLiveQuote(client, category, code)
 	if err != nil {
 		return marketResult{}, err
 	}
-	client := &http.Client{Timeout: 12 * time.Second}
-	current, priceDate, err := fetchTencentQuote(client, symbol)
+	if isUSSecurity(code) {
+		return fetchUSMarket(client, code, days, current, priceDate)
+	}
+	if category == "fund" && !isExchangeFund(code) {
+		return fetchFundMarket(client, code, days, current, priceDate)
+	}
+	symbol, _, err := tencentSymbol(category, code)
 	if err != nil {
 		return marketResult{}, err
 	}
