@@ -1,9 +1,13 @@
+// 账本 HTTP 接口：提供收入设置、资产历史、仪表盘数据和当前资产快照。
+
 package httpapi
 
 import (
-	"math"
+	"database/sql"
+	"fulibu-go/internal/service"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // income 处理收入设置的读取和保存请求。
@@ -12,31 +16,39 @@ func (a *app) income(w http.ResponseWriter, r *http.Request) {
 	if u == nil {
 		return
 	}
-	if r.Method == "GET" {
-		income, e := a.ledger.Income(u.ID)
-		if e != nil {
-			fail(w, 500, e.Error())
+	if r.Method == http.MethodGet {
+		v, err := a.ledger.Income(u.ID)
+		if err != nil {
+			writeAPIError(w, err)
 			return
 		}
-		out(w, 200, map[string]any{"income": income})
+		out(w, 200, map[string]any{"income": v, "moneyUnit": "minor"})
 		return
 	}
-	if r.Method != "PUT" {
-		fail(w, 405, "方法不允许")
+	if r.Method != http.MethodPatch {
+		apiError(w, 405, "method_not_allowed", "方法不允许")
 		return
 	}
-	var x struct{ MonthlySalary, MonthlySavings, AnnualBonus float64 }
-	if body(r, &x) != nil || x.MonthlySalary < 0 || x.MonthlySavings < 0 || x.AnnualBonus < 0 || x.MonthlySalary > maxMoney || x.MonthlySavings > maxMoney || x.AnnualBonus > maxMoney {
-		fail(w, 400, "请输入有效的工资、储蓄额和年终奖")
+	var x service.IncomePatch
+	o, err := mutationInput(r, u, &x)
+	if err != nil {
+		writeAPIError(w, err)
 		return
 	}
-	s, ss, bonus := int64(math.Round(x.MonthlySalary*100)), int64(math.Round(x.MonthlySavings*100)), int64(math.Round(x.AnnualBonus*100))
-	income, e := a.ledger.SaveIncome(u.ID, s, ss, bonus)
-	if e != nil {
-		fail(w, 500, e.Error())
-		return
-	}
-	out(w, 200, map[string]any{"income": income})
+	a.mutate(w, r, o /* 在事务中读取原收入并保存修改，返回变更前后数据。 */, func(tx *sql.Tx) (service.MutationResult, error) {
+		before, err := service.ReadIncome(tx, u.ID)
+		if err != nil {
+			return service.MutationResult{}, err
+		}
+		if err = checkVersion(x.Version, before.Version); err != nil {
+			return service.MutationResult{}, err
+		}
+		after, err := service.PatchIncome(tx, u.ID, before, x)
+		if err != nil {
+			return service.MutationResult{}, err
+		}
+		return mutationJSON(200, map[string]any{"income": after, "before": before, "after": after, "dryRun": o.DryRun, "moneyUnit": "minor"})
+	})
 }
 
 // history 处理资产历史快照的查询和手动记录请求。
@@ -45,32 +57,57 @@ func (a *app) history(w http.ResponseWriter, r *http.Request) {
 	if u == nil {
 		return
 	}
-	if r.Method == "POST" {
-		ok, err := a.ledger.Snapshot(u.ID, "asset_change")
+	if r.Method == http.MethodPost {
+		var x /* 表示不需要业务字段的手动快照请求体。 */ struct{}
+		o, err := mutationInput(r, u, &x)
 		if err != nil {
-			fail(w, 500, err.Error())
+			writeAPIError(w, err)
 			return
 		}
-		out(w, 200, map[string]any{"ok": ok})
+		a.mutate(w, r, o /* 在变更事务中记录当天资产快照，并区分实际写入与预览结果。 */, func(tx *sql.Tx) (service.MutationResult, error) {
+			ok, err := service.SnapshotTx(tx, u.ID, "asset_change")
+			if err != nil {
+				return service.MutationResult{}, err
+			}
+			return mutationJSON(200, map[string]any{"ok": ok, "dryRun": o.DryRun, "snapshotRecorded": ok && !o.DryRun})
+		})
 		return
 	}
-	if r.Method != "GET" {
-		fail(w, 405, "方法不允许")
+	if r.Method != http.MethodGet {
+		apiError(w, 405, "method_not_allowed", "方法不允许")
 		return
 	}
 	limit := 365
-	if n, e := strconv.Atoi(r.URL.Query().Get("limit")); e == nil && n > 0 {
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			writeAPIError(w, badRequest("limit 必须为正整数"))
+			return
+		}
 		limit = n
 	}
 	if limit > 3650 {
 		limit = 3650
 	}
-	v, e := a.ledger.History(u.ID, limit)
-	if e != nil {
-		fail(w, 500, e.Error())
+	from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
+	for _, date := range []string{from, to} {
+		if date != "" {
+			if _, err := time.Parse("2006-01-02", date); err != nil || len(date) != 10 {
+				writeAPIError(w, badRequest("日期必须为 YYYY-MM-DD"))
+				return
+			}
+		}
+	}
+	if from != "" && to != "" && from > to {
+		writeAPIError(w, badRequest("开始日期不能晚于结束日期"))
 		return
 	}
-	out(w, 200, map[string]any{"history": v})
+	v, err := a.ledger.HistoryRange(u.ID, limit, from, to)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	out(w, 200, map[string]any{"history": v, "moneyUnit": "minor"})
 }
 
 // dashboard 聚合仪表盘首次加载所需的数据。
@@ -109,6 +146,7 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 // snapshotCurrentAssets refreshes quote-based holdings first, then records the
 // portfolio total. It keeps the displayed dashboard and its history row on
 // the same valuation basis.
+// snapshotCurrentAssets 先刷新当前用户的证券市值，再按最新汇率记录当天资产快照。
 func (a *app) snapshotCurrentAssets(userID int64, trigger string) (bool, error) {
 	if err := a.refreshMarketAssetValues(userID); err != nil {
 		return false, err

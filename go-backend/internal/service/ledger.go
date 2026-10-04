@@ -1,3 +1,4 @@
+// 账本服务：管理汇率缓存、每日资产快照、历史记录、收入与退休计划。
 // Package service contains application use-cases. It deliberately has no HTTP
 // types: callers supply values and receive domain-shaped results.
 package service
@@ -8,16 +9,23 @@ import (
 	"time"
 )
 
+// Ledger 持有数据库依赖，为资产账本、历史快照和退休计划提供业务服务。
 type Ledger struct{ db *sql.DB }
 
 // NewLedger 创建账本服务，并注入数据库依赖。
 func NewLedger(db *sql.DB) *Ledger { return &Ledger{db: db} }
 
+// Income 表示收入设置及据此生成的未来现金流和预测基准日期。
 type Income struct {
-	MonthlySalary  int64  `json:"monthly_salary"`
-	MonthlySavings int64  `json:"monthly_savings"`
-	AnnualBonus    int64  `json:"annual_bonus"`
-	UpdatedAt      string `json:"updated_at"`
+	BonusSettings  *BonusSettings `json:"bonus_settings"`
+	Options        []OptionGrant  `json:"options"`
+	Cashflows      []Cashflow     `json:"cashflows"`
+	ForecastAsOf   string         `json:"forecast_as_of"`
+	Version        int64          `json:"version"`
+	MonthlySalary  int64          `json:"monthly_salary"`
+	MonthlySavings int64          `json:"monthly_savings"`
+	AnnualBonus    int64          `json:"annual_bonus"`
+	UpdatedAt      string         `json:"updated_at"`
 }
 
 // Snapshot 按当前汇率汇总资产并写入当天的历史快照。
@@ -29,7 +37,21 @@ func (s *Ledger) Snapshot(userID int64, trigger string) (bool, error) {
 		return false, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.Query("SELECT amount,currency FROM assets WHERE user_id=?", userID)
+	ok, err := SnapshotTx(tx, userID, trigger)
+	if err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return ok, nil
+}
+
+// SnapshotTx joins a business mutation's transaction so the daily observation
+// cannot outlive a rolled-back asset change.
+// SnapshotTx 在业务变更事务中记录当天资产快照，使资产写入和快照一起提交或回滚。
+func SnapshotTx(tx *sql.Tx, userID int64, trigger string) (bool, error) {
+	rows, err := tx.Query("SELECT amount,currency FROM assets WHERE user_id=? AND archived_at IS NULL", userID)
 	if err != nil {
 		return false, err
 	}
@@ -63,11 +85,21 @@ func (s *Ledger) Snapshot(userID int64, trigger string) (bool, error) {
 			return false, err
 		}
 		rate, ok := rates[currency]
-		if !ok || rate <= 0 {
+		if !ok || rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
 			rows.Close()
 			return false, nil
 		}
-		total += int64(math.Round(float64(amount) * rate))
+		converted := math.Round(float64(amount) * rate)
+		if converted < 0 || converted >= float64(math.MaxInt64) || math.IsNaN(converted) || math.IsInf(converted, 0) {
+			rows.Close()
+			return false, invalid("资产汇总超出可表示范围")
+		}
+		n := int64(converted)
+		if total > math.MaxInt64-n {
+			rows.Close()
+			return false, invalid("资产汇总超出可表示范围")
+		}
+		total += n
 	}
 	if err := rows.Close(); err != nil {
 		return false, err
@@ -75,9 +107,6 @@ func (s *Ledger) Snapshot(userID int64, trigger string) (bool, error) {
 	date := time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
 	if _, err = tx.Exec(`INSERT INTO asset_history(user_id,snapshot_date,total_cny,trigger,rate_date,created_at,updated_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
 ON CONFLICT(user_id,snapshot_date) DO UPDATE SET total_cny=excluded.total_cny,trigger=excluded.trigger,rate_date=excluded.rate_date,updated_at=CURRENT_TIMESTAMP`, userID, date, total, trigger, rateDate); err != nil {
-		return false, err
-	}
-	if err = tx.Commit(); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -110,6 +139,8 @@ func (s *Ledger) LatestRates() (map[string]float64, string, error) {
 // at or after since.  The market's quote date is intentionally not used here:
 // it does not advance on weekends and holidays even when the cache was just
 // refreshed.
+// RatesCachedSince 检查每种预期外币的缓存更新时间是否均不早于指定时刻。
+// 使用抓取时间而非行情日期，避免周末和节假日的旧行情日期误判新缓存。
 func (s *Ledger) RatesCachedSince(since time.Time, expectedCurrencies int) (bool, error) {
 	var count int
 	var oldest sql.NullString
@@ -128,6 +159,7 @@ func (s *Ledger) RatesCachedSince(since time.Time, expectedCurrencies int) (bool
 
 // SnapshotAll writes one daily snapshot per registered user.  A failure for
 // one account is returned while the other accounts are still attempted.
+// SnapshotAll 尝试为每个注册用户写入当天资产快照，并返回遇到的首个错误。
 func (s *Ledger) SnapshotAll(trigger string) error {
 	rows, err := s.db.Query("SELECT id FROM users ORDER BY id")
 	if err != nil {
@@ -161,6 +193,7 @@ func (s *Ledger) SnapshotAll(trigger string) error {
 // SnapshotMissingTodayAll fills in today's snapshot for accounts that do not
 // have one yet.  It lets a server started after the scheduled run recover
 // without replacing a snapshot already captured earlier in the day.
+// SnapshotMissingTodayAll 补录尚无当天快照的用户，保留当天已经记录的快照。
 func (s *Ledger) SnapshotMissingTodayAll(trigger string) error {
 	date := time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
 	rows, err := s.db.Query(`SELECT u.id FROM users u
@@ -196,7 +229,12 @@ func (s *Ledger) SnapshotMissingTodayAll(trigger string) error {
 
 // History 按时间顺序读取指定数量的资产历史快照。
 func (s *Ledger) History(userID int64, limit int) ([]map[string]any, error) {
-	rows, err := s.db.Query(`SELECT id,user_id,snapshot_date,total_cny,trigger,rate_date,created_at,updated_at FROM (SELECT id,user_id,snapshot_date,total_cny,trigger,rate_date,created_at,updated_at FROM asset_history WHERE user_id=? ORDER BY snapshot_date DESC LIMIT ?) ORDER BY snapshot_date ASC`, userID, limit)
+	return s.HistoryRange(userID, limit, "", "")
+}
+
+// HistoryRange 按可选起止日期查询最近的资产快照，并以日期升序返回。
+func (s *Ledger) HistoryRange(userID int64, limit int, from, to string) ([]map[string]any, error) {
+	rows, err := s.db.Query(`SELECT id,user_id,snapshot_date,total_cny,trigger,rate_date,created_at,updated_at FROM (SELECT id,user_id,snapshot_date,total_cny,trigger,rate_date,created_at,updated_at FROM asset_history WHERE user_id=? AND (?='' OR snapshot_date>=?) AND (?='' OR snapshot_date<=?) ORDER BY snapshot_date DESC LIMIT ?) ORDER BY snapshot_date ASC`, userID, from, from, to, to, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -222,15 +260,21 @@ func nullable(v sql.NullString) any {
 	return nil
 }
 
+// Retirement 表示退休目标、当前资产、进度、预计达标时间和目标明细。
 type Retirement struct {
-	TargetCNY      int64            `json:"target_cny"`
-	CurrentCNY     int64            `json:"current_cny"`
-	Progress       float64          `json:"progress"`
-	ProjectedYears *float64         `json:"projected_years"`
-	AnnualRate     float64          `json:"annual_rate"`
-	Items          []RetirementItem `json:"items"`
+	ProjectedDate     string           `json:"projected_date,omitempty"`
+	MissingCurrencies []string         `json:"missing_currencies,omitempty"`
+	TargetCNY         int64            `json:"target_cny"`
+	CurrentCNY        int64            `json:"current_cny"`
+	Progress          float64          `json:"progress"`
+	ProjectedYears    *float64         `json:"projected_years"`
+	AnnualRate        float64          `json:"annual_rate"`
+	Items             []RetirementItem `json:"items"`
 }
+
+// RetirementItem 表示一项退休目标支出或资产需求，记录金额、币种与版本。
 type RetirementItem struct {
+	Version  int64  `json:"version"`
 	ID       int64  `json:"id"`
 	Name     string `json:"name"`
 	Category string `json:"category"`
@@ -239,16 +283,14 @@ type RetirementItem struct {
 }
 
 // Retirement 汇总退休目标、当前资产和预计达成时间。
-// 它计算目标进度，并模拟按月复利和计划储蓄后的达成时间。
-// with the user's weighted asset rate and planned monthly savings.
-func (s *Ledger) Retirement(userID int64) (Retirement, error) {
-	var out Retirement
-	err := s.db.QueryRow("SELECT target_cny FROM retirement_goals WHERE user_id=?", userID).Scan(&out.TargetCNY)
-	if err != nil && err != sql.ErrNoRows {
-		return out, err
-	}
+// 它按日复利，按月末和实际领取/变现日期计入未来资金。
+func (s *Ledger) Retirement(userID int64) (Retirement, error) { return RetirementFor(s.db, userID) }
+
+// RetirementFor 读取目标、持仓、汇率和收入计划，计算退休进度、加权收益率与预计达标日期。
+func RetirementFor(q Queryer, userID int64) (Retirement, error) {
+	out := Retirement{Items: []RetirementItem{}}
 	rates := map[string]float64{"CNY": 1}
-	rows, err := s.db.Query("SELECT currency,cny_rate FROM exchange_rates")
+	rows, err := q.Query("SELECT currency,cny_rate FROM exchange_rates")
 	if err != nil {
 		return out, err
 	}
@@ -260,7 +302,7 @@ func (s *Ledger) Retirement(userID int64) (Retirement, error) {
 		}
 	}
 	rows.Close()
-	goalItems, err := s.db.Query("SELECT id,name,category,amount,currency FROM retirement_goal_items WHERE user_id=? ORDER BY id", userID)
+	goalItems, err := q.Query("SELECT id,name,category,amount,currency,version FROM retirement_goal_items WHERE user_id=? ORDER BY id", userID)
 	if err != nil {
 		return out, err
 	}
@@ -268,7 +310,7 @@ func (s *Ledger) Retirement(userID int64) (Retirement, error) {
 	var itemTarget int64
 	for goalItems.Next() {
 		var item RetirementItem
-		if goalItems.Scan(&item.ID, &item.Name, &item.Category, &item.Amount, &item.Currency) != nil {
+		if goalItems.Scan(&item.ID, &item.Name, &item.Category, &item.Amount, &item.Currency, &item.Version) != nil {
 			continue
 		}
 		out.Items = append(out.Items, item)
@@ -276,10 +318,8 @@ func (s *Ledger) Retirement(userID int64) (Retirement, error) {
 			itemTarget += int64(math.Round(float64(item.Amount) * rate))
 		}
 	}
-	if len(out.Items) > 0 {
-		out.TargetCNY = itemTarget
-	}
-	assets, err := s.db.Query("SELECT amount,currency,annual_rate FROM assets WHERE user_id=?", userID)
+	out.TargetCNY = itemTarget
+	assets, err := q.Query("SELECT amount,currency,annual_rate FROM assets WHERE user_id=? AND archived_at IS NULL", userID)
 	if err != nil {
 		return out, err
 	}
@@ -312,78 +352,33 @@ func (s *Ledger) Retirement(userID int64) (Retirement, error) {
 		out.ProjectedYears = &years
 		return out, nil
 	}
-	income, err := s.Income(userID)
+	income, err := ReadIncome(q, userID)
 	if err != nil {
 		return out, err
 	}
-	balance := float64(out.CurrentCNY)
-	monthlyRate := out.AnnualRate / 100 / 12
-	for month := 1; month <= 1200; month++ {
-		balance = balance*(1+monthlyRate) + float64(income.MonthlySavings)
-		if month%12 == 0 {
-			balance += float64(income.AnnualBonus)
+	start := time.Now().In(planningZone)
+	start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, planningZone)
+	out.ProjectedDate = ProjectRetirement(start, out.CurrentCNY, out.TargetCNY, out.AnnualRate, income.MonthlySavings, income.Cashflows, rates)
+	seen := map[string]bool{}
+	for _, event := range income.Cashflows {
+		if _, ok := rates[event.Currency]; !ok && !seen[event.Currency] && (out.ProjectedDate == "" || event.Date <= out.ProjectedDate) {
+			seen[event.Currency] = true
+			out.MissingCurrencies = append(out.MissingCurrencies, event.Currency)
 		}
-		if balance >= float64(out.TargetCNY) {
-			years := float64(month) / 12
-			out.ProjectedYears = &years
-			break
-		}
+	}
+	if len(out.MissingCurrencies) > 0 {
+		out.ProjectedDate = ""
+		return out, nil
+	}
+	if out.ProjectedDate != "" {
+		date, _ := time.ParseInLocation("2006-01-02", out.ProjectedDate, planningZone)
+		years := date.Sub(start).Hours() / 24 / 365.25
+		out.ProjectedYears = &years
 	}
 	return out, nil
-}
-
-// SaveRetirementTarget 保存兼容旧数据的单一退休金额目标。
-func (s *Ledger) SaveRetirementTarget(userID, targetCNY int64) (Retirement, error) {
-	_, err := s.db.Exec(`INSERT INTO retirement_goals(user_id,target_cny,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)
-ON CONFLICT(user_id) DO UPDATE SET target_cny=excluded.target_cny,updated_at=CURRENT_TIMESTAMP`, userID, targetCNY)
-	if err != nil {
-		return Retirement{}, err
-	}
-	return s.Retirement(userID)
-}
-
-// AddRetirementItem 新增一项退休目标资产并返回最新汇总。
-func (s *Ledger) AddRetirementItem(userID int64, name, category string, amount int64, currency string) (Retirement, error) {
-	_, err := s.db.Exec("INSERT INTO retirement_goal_items(user_id,name,category,amount,currency) VALUES(?,?,?,?,?)", userID, name, category, amount, currency)
-	if err != nil {
-		return Retirement{}, err
-	}
-	return s.Retirement(userID)
-}
-
-// DeleteRetirementItem 删除用户的一项退休目标资产并返回最新汇总。
-func (s *Ledger) DeleteRetirementItem(userID, id int64) (Retirement, error) {
-	_, err := s.db.Exec("DELETE FROM retirement_goal_items WHERE id=? AND user_id=?", id, userID)
-	if err != nil {
-		return Retirement{}, err
-	}
-	return s.Retirement(userID)
 }
 
 // Income 读取用户的收入与储蓄规划设置。
 // 缺少记录时返回空设置，而非交给 HTTP 层做特殊处理。
 // valid empty setting, rather than an HTTP-layer special case.
-func (s *Ledger) Income(userID int64) (Income, error) {
-	var result Income
-	err := s.db.QueryRow("SELECT monthly_salary, monthly_savings, annual_bonus, updated_at FROM income_settings WHERE user_id = ?", userID).
-		Scan(&result.MonthlySalary, &result.MonthlySavings, &result.AnnualBonus, &result.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return Income{}, nil
-	}
-	return result, err
-}
-
-// SaveIncome 保存用户的收入与储蓄规划设置。
-// 持久化和 upsert 语义封装在业务层，不泄漏给 HTTP 处理器。
-// do not leak into an HTTP handler.
-func (s *Ledger) SaveIncome(userID, monthlySalary, monthlySavings, annualBonus int64) (Income, error) {
-	_, err := s.db.Exec(`INSERT INTO income_settings(user_id, monthly_salary, monthly_savings, annual_bonus, updated_at)
-VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-ON CONFLICT(user_id) DO UPDATE SET monthly_salary=excluded.monthly_salary,
-monthly_savings=excluded.monthly_savings, annual_bonus=excluded.annual_bonus,
-updated_at=CURRENT_TIMESTAMP`, userID, monthlySalary, monthlySavings, annualBonus)
-	if err != nil {
-		return Income{}, err
-	}
-	return s.Income(userID)
-}
+func (s *Ledger) Income(userID int64) (Income, error) { return ReadIncome(s.db, userID) }

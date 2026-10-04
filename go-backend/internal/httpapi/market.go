@@ -1,8 +1,11 @@
+// 证券行情服务：读取实时报价和历史价格，计算年化收益并提供缓存回退。
+
 package httpapi
 
 import (
 	"encoding/json"
 	"fmt"
+	"fulibu-go/internal/service"
 	"io"
 	"math"
 	"net/http"
@@ -12,6 +15,7 @@ import (
 	"time"
 )
 
+// marketResult 表示证券价格、年化收益、历史区间、来源和缓存状态。
 type marketResult struct {
 	Category        string  `json:"category"`
 	Code            string  `json:"code"`
@@ -29,17 +33,20 @@ type marketResult struct {
 	Stale           bool    `json:"stale,omitempty"`
 }
 
+// tencentKlineResponse 对应腾讯日线接口的状态、消息和各证券原始行情数据。
 type tencentKlineResponse struct {
 	Code int                        `json:"code"`
 	Msg  string                     `json:"msg"`
 	Data map[string]json.RawMessage `json:"data"`
 }
 
+// tencentKlineData 保存腾讯日线接口中的前复权与普通日线序列。
 type tencentKlineData struct {
 	QfqDay []json.RawMessage `json:"qfqday"`
 	Day    []json.RawMessage `json:"day"`
 }
 
+// marketPoint 表示某个日期的有效价格，作为年化收益计算的端点。
 type marketPoint struct {
 	price float64
 	at    time.Time
@@ -47,6 +54,7 @@ type marketPoint struct {
 
 // tencentSymbol converts UI codes to Tencent Finance symbols. Plain six-digit
 // mainland codes are resolved by the usual exchange-code convention.
+// tencentSymbol 根据证券类别和代码生成腾讯行情标识，并返回对应报价币种。
 func tencentSymbol(category, code string) (symbol, currency string, err error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if code == "" {
@@ -86,10 +94,12 @@ func tencentSymbol(category, code string) (symbol, currency string, err error) {
 	return "us" + code, "USD", nil
 }
 
+// allDigits 判断非空字符串是否仅由十进制数字组成。
 func allDigits(value string) bool { return value != "" && strings.Trim(value, "0123456789") == "" }
 
 // fetchTencentQuote reads the live quote endpoint and rejects any non-quote
 // response (such as an error HTML page) before parsing it.
+// fetchTencentQuote 读取并校验腾讯实时报价响应，返回有效单价与报价日期。
 func fetchTencentQuote(client *http.Client, symbol string) (float64, string, error) {
 	response, err := client.Get("https://qt.gtimg.cn/q=" + url.QueryEscape(symbol))
 	if err != nil {
@@ -123,6 +133,7 @@ func fetchTencentQuote(client *http.Client, symbol string) (float64, string, err
 	return price, date, nil
 }
 
+// quoteDate 将支持的报价时间字符串转换为 YYYY-MM-DD 日期。
 func quoteDate(value string) string {
 	value = strings.TrimSpace(strings.ReplaceAll(value, "/", "-"))
 	if len(value) >= 10 && value[4:5] == "-" && value[7:8] == "-" {
@@ -134,10 +145,12 @@ func quoteDate(value string) string {
 	return ""
 }
 
+// isExchangeFund 根据六位基金代码前缀判断是否为支持的场内基金。
 func isExchangeFund(code string) bool {
 	return len(code) == 6 && allDigits(code) && (strings.HasPrefix(code, "51") || strings.HasPrefix(code, "52") || strings.HasPrefix(code, "56") || strings.HasPrefix(code, "58") || strings.HasPrefix(code, "15") || strings.HasPrefix(code, "16"))
 }
 
+// isUSSecurity 判断证券代码是否符合美股代码格式。
 func isUSSecurity(code string) bool {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if strings.HasPrefix(code, "US") && len(code) > 2 {
@@ -147,6 +160,7 @@ func isUSSecurity(code string) bool {
 }
 
 // fetchFundQuote restores the old Eastmoney source for off-exchange funds.
+// fetchFundQuote 从东方财富获取场外基金最新单位净值及其日期。
 func fetchFundQuote(client *http.Client, code string) (float64, string, error) {
 	endpoint := "https://api.fund.eastmoney.com/f10/lsjz?" + url.Values{"fundCode": {code}, "pageIndex": {"1"}, "pageSize": {"1"}}.Encode()
 	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -162,9 +176,9 @@ func fetchFundQuote(client *http.Client, code string) (float64, string, error) {
 	if response.StatusCode != http.StatusOK {
 		return 0, "", fmt.Errorf("东方财富基金服务返回 HTTP %d", response.StatusCode)
 	}
-	var payload struct {
-		Data struct {
-			List []struct {
+	var payload /* 对应基金最新净值接口的完整响应。 */ struct {
+		Data /* 对应基金接口中的净值数据容器。 */ struct {
+			List [] /* 对应一条基金净值记录的日期与单位净值。 */ struct {
 				Date string `json:"FSRQ"`
 				NAV  string `json:"DWJZ"`
 			} `json:"LSJZList"`
@@ -183,6 +197,7 @@ func fetchFundQuote(client *http.Client, code string) (float64, string, error) {
 	return price, payload.Data.List[0].Date, nil
 }
 
+// fetchLiveQuote 根据证券类别和市场选择实时报价来源，返回价格、币种和日期。
 func fetchLiveQuote(client *http.Client, category, code string) (float64, string, string, error) {
 	if category == "fund" && !isExchangeFund(code) && !isUSSecurity(code) {
 		price, date, err := fetchFundQuote(client, code)
@@ -200,31 +215,37 @@ func fetchLiveQuote(client *http.Client, category, code string) (float64, string
 // asset before a portfolio snapshot is calculated. A quote failure leaves its
 // most recently saved valuation intact, so one unavailable symbol cannot
 // prevent the rest of the portfolio from being recorded.
+// refreshMarketAssetValues 刷新未归档证券资产的市值；行情失败时保留原估值，并防止覆盖并发修改。
 func (a *app) refreshMarketAssetValues(userID int64) error {
 	assets, err := a.listAssets(userID)
 	if err != nil {
 		return err
 	}
 	client := &http.Client{Timeout: 12 * time.Second}
+	fetch := a.quote
+	if fetch == nil {
+		fetch = fetchLiveQuote
+	}
 	for _, asset := range assets {
 		if (asset.Category != "stock" && asset.Category != "fund") || asset.Code == nil || asset.Quantity == nil || *asset.Quantity <= 0 {
 			continue
 		}
-		price, quoteCurrency, _, err := fetchLiveQuote(client, asset.Category, *asset.Code)
+		price, quoteCurrency, _, err := fetch(client, asset.Category, *asset.Code)
 		if err != nil {
 			continue
 		}
-		amount := int64(math.Round(*asset.Quantity * price * 100))
-		if amount <= 0 {
+		amount, conversionErr := service.Money(*asset.Quantity*price, false)
+		if conversionErr != nil || !service.Currency(quoteCurrency) {
 			continue
 		}
-		if _, err := a.db.Exec("UPDATE assets SET amount=?,currency=? WHERE id=? AND user_id=?", amount, quoteCurrency, asset.ID, userID); err != nil {
+		if _, err := a.db.Exec("UPDATE assets SET amount=?,currency=? WHERE id=? AND user_id=? AND archived_at IS NULL AND version=?", amount, quoteCurrency, asset.ID, userID, asset.Version); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// fetchTencentHistory 获取腾讯证券日线数据，优先使用前复权价格序列。
 func fetchTencentHistory(client *http.Client, symbol string, days int) ([]json.RawMessage, error) {
 	parameter := fmt.Sprintf("%s,day,,,%d,qfq", symbol, days+10)
 	endpoint := "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?" + url.Values{"param": {parameter}}.Encode()
@@ -262,6 +283,7 @@ func fetchTencentHistory(client *http.Client, symbol string, days int) ([]json.R
 	return data.Day, nil
 }
 
+// tencentHistoryPoints 解析腾讯日线记录，并筛选截止日期之后的有效价格点。
 func tencentHistoryPoints(rows []json.RawMessage, cutoff time.Time) []marketPoint {
 	points := make([]marketPoint, 0, len(rows))
 	for _, rawRow := range rows {
@@ -281,6 +303,7 @@ func tencentHistoryPoints(rows []json.RawMessage, cutoff time.Time) []marketPoin
 	return points
 }
 
+// annualized 根据首尾价格与实际间隔天数计算百分比形式的年化收益率。
 func annualized(first, last marketPoint) float64 {
 	years := math.Max(1/365.25, float64(last.at.Sub(first.at).Hours())/(24*365.25))
 	return (math.Pow(last.price/first.price, 1/years) - 1) * 100
@@ -288,6 +311,7 @@ func annualized(first, last marketPoint) float64 {
 
 // fetchUSMarket restores Yahoo Finance adjusted closes for US historical
 // returns, and converts both endpoints with Frankfurter USD/CNY history.
+// fetchUSMarket 读取 Yahoo 美股复权价格，并用首尾历史 USD/CNY 汇率计算人民币年化收益率。
 func fetchUSMarket(client *http.Client, code string, days int, current float64, priceDate string) (marketResult, error) {
 	ticker := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(code)), "US")
 	end := time.Now().Unix() + 86400
@@ -306,12 +330,12 @@ func fetchUSMarket(client *http.Client, code string, days int, current float64, 
 	if response.StatusCode != http.StatusOK {
 		return marketResult{}, fmt.Errorf("Yahoo Finance 返回 HTTP %d", response.StatusCode)
 	}
-	var payload struct {
-		Chart struct {
-			Result []struct {
-				Timestamp  []int64 `json:"timestamp"`
-				Indicators struct {
-					AdjClose []struct {
+	var payload /* 对应 Yahoo 历史行情接口的完整响应。 */ struct {
+		Chart /* 保存 Yahoo 图表查询返回的证券结果列表。 */ struct {
+			Result [] /* 对应单个证券的历史时间戳与价格指标。 */ struct {
+				Timestamp []int64 `json:"timestamp"`
+				Indicators/* 保存用于收益计算的复权收盘价指标。 */ struct {
+					AdjClose [] /* 保存可为空的复权收盘价序列。 */ struct {
 						Values []*float64 `json:"adjclose"`
 					} `json:"adjclose"`
 				} `json:"indicators"`
@@ -358,6 +382,7 @@ func fetchUSMarket(client *http.Client, code string, days int, current float64, 
 	return marketResult{Code: strings.ToUpper(code), AnnualRate: annualized(first, last), RequestedDays: days, ActualDays: actualDays, HistoryLimited: limited, StartDate: first.at.Format("2006-01-02"), EndDate: last.at.Format("2006-01-02"), CalculationDate: time.Now().In(shanghai).Format("2006-01-02"), CurrentPrice: current, PriceCurrency: "USD", PriceDate: priceDate, Source: "Yahoo Finance 复权收盘价（人民币汇率调整）"}, nil
 }
 
+// fetchHistoricalUSDCNY 查询指定日期的有效 USD/CNY 历史汇率。
 func fetchHistoricalUSDCNY(client *http.Client, date string) (float64, error) {
 	at, err := time.Parse("2006-01-02", date)
 	if err != nil {
@@ -372,7 +397,7 @@ func fetchHistoricalUSDCNY(client *http.Client, date string) (float64, error) {
 	if response.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("Frankfurter 返回 HTTP %d", response.StatusCode)
 	}
-	var rows []struct {
+	var rows [] /* 对应指定日期的基础币种、目标币种和历史汇率。 */ struct {
 		Date, Base, Quote string
 		Rate              float64
 	}
@@ -387,6 +412,7 @@ func fetchHistoricalUSDCNY(client *http.Client, date string) (float64, error) {
 	return 0, fmt.Errorf("没有找到 %s 的 USD/CNY 历史汇率", date)
 }
 
+// fetchFundMarket 读取东方财富基金历史净值，计算实际覆盖区间内的年化收益率。
 func fetchFundMarket(client *http.Client, code string, days int, current float64, priceDate string) (marketResult, error) {
 	endpoint := "https://api.fund.eastmoney.com/f10/lsjz?" + url.Values{"fundCode": {code}, "pageIndex": {"1"}, "pageSize": {"100"}}.Encode()
 	request, _ := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -396,9 +422,9 @@ func fetchFundMarket(client *http.Client, code string, days int, current float64
 		return marketResult{}, err
 	}
 	defer response.Body.Close()
-	var payload struct {
-		Data struct {
-			List []struct {
+	var payload /* 对应基金历史净值接口的完整响应。 */ struct {
+		Data /* 保存基金历史净值列表。 */ struct {
+			List [] /* 对应一条历史基金净值的日期、单位净值和累计净值。 */ struct {
 				Date     string `json:"FSRQ"`
 				NAV      string `json:"DWJZ"`
 				TotalNAV string `json:"LJJZ"`
@@ -434,6 +460,7 @@ func fetchFundMarket(client *http.Client, code string, days int, current float64
 	return marketResult{Code: strings.ToUpper(code), AnnualRate: annualized(first, last), RequestedDays: days, ActualDays: int(latestDate.Sub(firstDate).Hours() / 24), HistoryLimited: limited, StartDate: oldest.Date, EndDate: latestRow.Date, CalculationDate: time.Now().In(shanghai).Format("2006-01-02"), CurrentPrice: current, PriceCurrency: "CNY", PriceDate: priceDate, Source: "东方财富历史净值"}, nil
 }
 
+// firstNonEmpty 返回参数列表中第一个非空字符串，全部为空时返回空字符串。
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -444,6 +471,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 // fetchMarket uses Tencent Finance for both live quotes and daily history.
+// fetchMarket 根据证券市场选择实时与历史行情来源，并计算指定回溯区间的收益率。
 func fetchMarket(category, code string, days int) (marketResult, error) {
 	if days < 1 || days > 3650 {
 		return marketResult{}, fmt.Errorf("不支持的历史区间")
@@ -484,11 +512,12 @@ func fetchMarket(category, code string, days int) (marketResult, error) {
 }
 
 // cachedMarketPrice derives a last-known unit price when Tencent is temporarily unavailable.
+// cachedMarketPrice 从当前用户未归档资产的已存市值和数量推算最后可用单价。
 func (a *app) cachedMarketPrice(userID int64, category, code string, days int) (marketResult, bool) {
 	var amount int64
 	var quantity float64
 	var currency string
-	err := a.db.QueryRow(`SELECT amount,quantity,currency FROM assets WHERE user_id=? AND category=? AND code=? AND quantity>0 ORDER BY id LIMIT 1`, userID, category, code).Scan(&amount, &quantity, &currency)
+	err := a.db.QueryRow(`SELECT amount,quantity,currency FROM assets WHERE user_id=? AND category=? AND code=? AND quantity>0 AND archived_at IS NULL ORDER BY id LIMIT 1`, userID, category, code).Scan(&amount, &quantity, &currency)
 	if err != nil || amount <= 0 || quantity <= 0 {
 		return marketResult{}, false
 	}
@@ -504,6 +533,7 @@ func (a *app) cachedMarketPrice(userID int64, category, code string, days int) (
 }
 
 // market handles one or many market quote requests.
+// market 处理单个证券或当前用户全部持仓的行情查询，并提供缓存回退结果。
 func (a *app) market(w http.ResponseWriter, r *http.Request) {
 	u := a.need(w, r)
 	if u == nil {

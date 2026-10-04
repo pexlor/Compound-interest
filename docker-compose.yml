@@ -1,10 +1,29 @@
+# 本地容器编排：启动后端与前端服务，持久化账本数据并开放网页端口。
+
 services:
   api:
     build: ./go-backend
     environment:
       DATA_DIR: /data
+      MYSQL_DSN: ${MYSQL_DSN:-}
     volumes:
       - fulibu-data:/data
+    restart: unless-stopped
+  mysql:
+    image: mysql:8.4
+    profiles: [mysql-backup]
+    environment:
+      MYSQL_DATABASE: fulibu_backup
+      MYSQL_USER: fulibu_backup
+      MYSQL_PASSWORD: ${MYSQL_BACKUP_PASSWORD:-}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_BACKUP_ROOT_PASSWORD:-}
+    volumes:
+      - fulibu-mysql-backup:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", 'MYSQL_PWD="$$MYSQL_PASSWORD" mysqladmin ping -h 127.0.0.1 -u "$$MYSQL_USER" --silent']
+      interval: 5s
+      timeout: 3s
+      retries: 20
     restart: unless-stopped
   web:
     build: ./frontend
@@ -16,3 +35,4 @@ services:
 
 volumes:
   fulibu-data:
+  fulibu-mysql-backup:

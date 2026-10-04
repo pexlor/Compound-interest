@@ -1,3 +1,5 @@
+// 账本服务测试：验证汇率缓存完整性、多用户快照和启动补录行为。
+
 package service
 
 import (
@@ -7,6 +9,7 @@ import (
 	"fulibu-go/internal/database"
 )
 
+// TestRatesCachedSinceRequiresCompleteRecentCache 验证汇率缓存必须币种齐全且每条缓存都足够新。
 func TestRatesCachedSinceRequiresCompleteRecentCache(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {
@@ -33,6 +36,7 @@ func TestRatesCachedSinceRequiresCompleteRecentCache(t *testing.T) {
 	}
 }
 
+// TestSnapshotAllWritesEveryUser 验证批量快照会为每个注册用户记录资产总额。
 func TestSnapshotAllWritesEveryUser(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {
@@ -59,6 +63,7 @@ func TestSnapshotAllWritesEveryUser(t *testing.T) {
 	}
 }
 
+// TestSnapshotMissingTodayAllDoesNotReplaceExistingSnapshot 验证补录只创建缺失的当天快照，不替换已有记录。
 func TestSnapshotMissingTodayAllDoesNotReplaceExistingSnapshot(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

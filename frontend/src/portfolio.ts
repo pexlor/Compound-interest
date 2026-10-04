@@ -1,4 +1,9 @@
+// 投资组合预测工具：结合汇率、定投日期、储蓄和未来现金流计算资产增长。
+
+import type { Cashflow } from "./income";
+// InvestmentStrategy 列出不定投、月投、周投、年投和日投策略。
 export type InvestmentStrategy = "none" | "monthly" | "weekly" | "yearly" | "daily";
+// PortfolioAsset 定义收益预测需要的资产、币种、收益率和定投字段。
 type PortfolioAsset = {
   category: string; amount: number; currency: string; annual_rate: number;
   investment_strategy?: InvestmentStrategy | null; investment_amount?: number | null; code?: string | null;
@@ -31,7 +36,7 @@ function marketTimeZone(code: string | null | undefined) {
 // localDateParts 将日期拆分为目标时区的本地年月日和星期。
 function localDateParts(date: Date, timeZone: string) {
   const parts = getDateFormatter(timeZone).formatToParts(date);
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const values = Object.fromEntries(parts.map(/* 把日期格式化片段转换为便于按名称读取的键值对。 */ (part) => [part.type, part.value]));
   return { year: Number(values.year), month: Number(values.month), day: Number(values.day), weekday: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(values.weekday) };
 }
 
@@ -68,6 +73,7 @@ function cachedContributionDates(start: Date, end: Date, strategy: InvestmentStr
   return dates;
 }
 
+// PreparedInvestment 保存已换算的初始市值、定投金额、收益率与未来扣款日期。
 type PreparedInvestment = {
   rate: number;
   initial: number;
@@ -81,10 +87,10 @@ function preparePortfolio(
   rates: Partial<Record<string, number>>,
   asOf = new Date(),
 ) {
-  if (assets.some((asset) => !Number.isFinite(rates[asset.currency]) || (rates[asset.currency] ?? 0) <= 0)) return null;
-  const total = assets.reduce((sum, asset) => sum + asset.amount * (rates[asset.currency] ?? 0), 0);
+  if (assets.some(/* 检查相关资产或预测现金流是否缺少有效汇率。 */ (asset) => !Number.isFinite(rates[asset.currency]) || (rates[asset.currency] ?? 0) <= 0)) return null;
+  const total = assets.reduce(/* 按汇率换算并累计资产的人民币总额。 */ (sum, asset) => sum + asset.amount * (rates[asset.currency] ?? 0), 0);
   const weightedRate = total
-    ? assets.reduce((sum, asset) => sum + asset.amount * (rates[asset.currency] ?? 0) * (asset.category === "fixed" ? 0 : asset.annual_rate), 0) / total
+    ? assets.reduce(/* 按人民币资产市值加权累计收益率，固定资产按零收益处理。 */ (sum, asset) => sum + asset.amount * (rates[asset.currency] ?? 0) * (asset.category === "fixed" ? 0 : asset.annual_rate), 0) / total
     : 0;
   return { total, weightedRate, asOf };
 }
@@ -93,7 +99,7 @@ function preparePortfolio(
 function prepareInvestments(assets: PortfolioAsset[], rates: Partial<Record<string, number>>, asOf: Date, maxHorizon: number): PreparedInvestment[] {
   const maxEnd = new Date(asOf);
   maxEnd.setUTCFullYear(maxEnd.getUTCFullYear() + maxHorizon);
-  return assets.map((asset) => {
+  return assets.map(/* 整理单个资产的人民币市值、收益率和未来定投扣款日期。 */ (asset) => {
     const rate = asset.category === "fixed" ? 0 : asset.annual_rate / 100;
     const contribution = (asset.investment_amount ?? 0) * (rates[asset.currency] ?? 0);
     const dates = asset.category === "fund" && asset.investment_strategy && asset.investment_strategy !== "none" && contribution > 0
@@ -109,20 +115,34 @@ function prepareInvestments(assets: PortfolioAsset[], rates: Partial<Record<stri
 }
 
 // calculateForecast 计算给定年限后的资产预测值和收益构成。
-function calculateForecast(prepared: ReturnType<typeof preparePortfolio> & object, investments: PreparedInvestment[], horizon: number, monthlySavings: number, annualBonus: number) {
+function calculateForecast(prepared: ReturnType<typeof preparePortfolio> & object, investments: PreparedInvestment[], horizon: number, monthlySavings: number, cashflows: Cashflow[], rates: Partial<Record<string, number>> = {}) {
   const end = new Date(prepared.asOf); end.setUTCFullYear(end.getUTCFullYear() + horizon);
-  const investmentForecast = investments.reduce((sum, investment) => {
+  const investmentForecast = investments.reduce(/* 合计各资产初始市值与未来定投的预测价值。 */ (sum, investment) => {
     const initial = investment.initial * Math.pow(1 + investment.rate, horizon);
     if (!investment.dates.length) return sum + initial;
-    const invested = investment.dates.reduce((total, date) => {
+    const invested = investment.dates.reduce(/* 按每笔定投距预测终点的时间累计其复利价值。 */ (total, date) => {
       if (date > end) return total;
       const yearsRemaining = Math.max(0, (end.getTime() - date.getTime()) / (365.25 * 86400000));
       return total + investment.contribution * Math.pow(1 + investment.rate, yearsRemaining);
     }, 0);
     return sum + initial + invested;
   }, 0);
-  const savingsContribution = (Math.max(0, monthlySavings) * 12 + Math.max(0, annualBonus)) * Math.max(0, horizon);
-  const forecast = investmentForecast + savingsContribution;
+  let savingsContribution = 0;
+  let proceedsForecast = 0;
+  const growth = Math.max(0, 1 + prepared.weightedRate / 100);
+  // add 将预测区间内的到账金额计入储蓄，并从到账日期起计算复利。
+  const add = (date: Date, amount: number) => {
+    if (date <= prepared.asOf || date > end) return;
+    savingsContribution += amount;
+    proceedsForecast += amount * Math.pow(growth, (end.getTime() - date.getTime()) / (365.25 * 86400000));
+  };
+  // Monthly savings arrive at calendar month end, matching retirement planning.
+  for (let date = new Date(Date.UTC(prepared.asOf.getUTCFullYear(), prepared.asOf.getUTCMonth() + 1, 0)); date <= end;) {
+    add(date, Math.max(0, monthlySavings));
+    date = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 2, 0));
+  }
+  for (const event of cashflows) add(new Date(`${event.date}T00:00:00Z`), event.amount * (rates[event.currency] ?? 0));
+  const forecast = investmentForecast + proceedsForecast;
   return { total: prepared.total, forecast, expectedGain: forecast - prepared.total, weightedRate: prepared.weightedRate, savingsContribution };
 }
 
@@ -133,13 +153,15 @@ export function calculatePortfolioSeries(
   maxHorizon: number,
   asOf = new Date(),
   monthlySavings = 0,
-  annualBonus = 0,
+  cashflows: Cashflow[] = [],
 ) {
   const prepared = preparePortfolio(assets, rates, asOf);
   if (!prepared) return null;
   const horizon = Math.max(0, Math.floor(maxHorizon));
+  const end = new Date(asOf); end.setUTCFullYear(end.getUTCFullYear() + horizon);
+  if (cashflows.some(/* 检查相关资产或预测现金流是否缺少有效汇率。 */ event => { const date = new Date(`${event.date}T00:00:00Z`); return date > asOf && date <= end && (!Number.isFinite(rates[event.currency]) || (rates[event.currency] ?? 0) <= 0); })) return null;
   const investments = prepareInvestments(assets, rates, asOf, horizon);
-  return Array.from({ length: horizon + 1 }, (_, year) => calculateForecast(prepared, investments, year, monthlySavings, annualBonus));
+  return Array.from({ length: horizon + 1 }, /* 逐年计算预测结果，生成从当前年度到终点的增长序列。 */ (_, year) => calculateForecast(prepared, investments, year, monthlySavings, cashflows, rates));
 }
 
 // calculatePortfolio 计算单一预测年限下的资产汇总结果。
@@ -149,9 +171,9 @@ export function calculatePortfolio(
   horizon: number,
   asOf = new Date(),
   monthlySavings = 0,
-  annualBonus = 0,
+  cashflows: Cashflow[] = [],
 ) {
-  const series = calculatePortfolioSeries(assets, rates, horizon, asOf, monthlySavings, annualBonus);
+  const series = calculatePortfolioSeries(assets, rates, horizon, asOf, monthlySavings, cashflows);
   if (!series) return null;
   return series[Math.max(0, Math.floor(horizon))] ?? series[0];
 }

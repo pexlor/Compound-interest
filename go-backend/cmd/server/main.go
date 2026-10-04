@@ -1,3 +1,5 @@
+// 服务启动入口：加载配置、打开数据库、启动定时任务并提供 API 与前端静态页面。
+
 // Command server is the composition root. Business HTTP code and persistence
 // implementation deliberately live outside this package.
 package main
@@ -23,11 +25,23 @@ func main() {
 	if dataDir == "" {
 		dataDir = "./data"
 	}
+	dataLock, err := database.AcquireDataLock(dataDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer dataLock.Close()
 	db, err := database.Open(dataDir)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	backup, err := database.StartMySQLBackup(ctx, db, os.Getenv("MYSQL_DSN"))
+	if err != nil {
+		log.Fatalf("initialize SQLite backup capture: %v", err)
+	}
+	defer backup.Close()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -36,11 +50,9 @@ func main() {
 	api := httpapi.New(db)
 	handler := serveApp(api, os.Getenv("STATIC_DIR"))
 	log.Printf("Fulibu listening on :%s", port)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	httpapi.StartDailyJobs(ctx, db)
 	server := &http.Server{Addr: ":" + port, Handler: handler}
-	go func() {
+	go /* 收到退出信号后，在十秒超时内优雅关闭 HTTP 服务。 */ func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -61,7 +73,7 @@ func serveApp(api http.Handler, staticDir string) http.Handler {
 	}
 	index := filepath.Join(staticDir, "index.html")
 	files := http.FileServer(http.Dir(staticDir))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc( /* 将 API 请求转交后端，其余请求按静态文件或单页应用入口处理。 */ func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/healthz" {
 			api.ServeHTTP(w, r)
 			return

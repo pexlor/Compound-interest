@@ -1,3 +1,5 @@
+// 汇率 HTTP 接口：拉取外币兑人民币汇率，更新本地缓存并判断新鲜度。
+
 package httpapi
 
 import (
@@ -11,6 +13,7 @@ import (
 
 var supportedCurrencies = []string{"USD", "HKD", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "CHF"}
 
+// frankfurterRate 对应汇率服务返回的日期、基础币种、目标币种和汇率。
 type frankfurterRate struct {
 	Date, Base, Quote string
 	Rate              float64
@@ -114,6 +117,7 @@ var shanghai = time.FixedZone("CST", 8*3600)
 // rateCacheFresh reports whether every supported foreign-currency rate was
 // refreshed after today's 09:15 in Shanghai.  Thus API callers normally use
 // the scheduled 09:16 cache, while an unavailable scheduler can self-heal.
+// rateCacheFresh 检查支持的外币缓存是否均在上海时间当天 09:15 之后更新。
 func (a *app) rateCacheFresh(now time.Time) (bool, error) {
 	local := now.In(shanghai)
 	cutoff := time.Date(local.Year(), local.Month(), local.Day(), 9, 15, 0, 0, shanghai)

@@ -1,3 +1,5 @@
+// 网页登录认证：处理密码校验、会话 Cookie、用户注册、登录与退出。
+
 package httpapi
 
 import (
@@ -40,6 +42,9 @@ func must64(s string) []byte { v, _ := base64.StdEncoding.DecodeString(s); retur
 
 // current 根据会话 Cookie 查询当前登录用户。
 func (a *app) current(r *http.Request) (*user, error) {
+	if p, ok := r.Context().Value(principalKey{}).(principal); ok {
+		return &p.User, nil
+	}
 	c, e := r.Cookie(sessionName)
 	if e != nil {
 		return nil, nil
@@ -79,7 +84,7 @@ func (a *app) register(w http.ResponseWriter, r *http.Request) {
 		fail(w, 405, "方法不允许")
 		return
 	}
-	var x struct{ DisplayName, Email, Password string }
+	var x /* 承载用户注册时的显示名称、邮箱和密码。 */ struct{ DisplayName, Email, Password string }
 	if body(r, &x) != nil || len([]rune(strings.TrimSpace(x.DisplayName))) < 2 || len([]rune(x.DisplayName)) > 40 || !strings.Contains(x.Email, "@") || len(x.Password) < 8 || len(x.Password) > 128 {
 		fail(w, 400, "请输入有效的注册信息")
 		return
@@ -103,7 +108,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 405, "方法不允许")
 		return
 	}
-	var x struct{ Email, Password string }
+	var x /* 承载用户登录时的邮箱和密码。 */ struct{ Email, Password string }
 	if body(r, &x) != nil {
 		fail(w, 400, "请求无效")
 		return

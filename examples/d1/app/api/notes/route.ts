@@ -1,7 +1,10 @@
+// D1 笔记示例接口：查询最近笔记、创建笔记并转换数据库错误提示。
+
 import { desc } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { notes } from "../../../db/schema";
 
+// toRouteErrorMessage 提取接口错误详情，并为缺少笔记表的情况提供迁移说明。
 function toRouteErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : "Unexpected error";
   const detail =
@@ -15,6 +18,7 @@ function toRouteErrorMessage(error: unknown) {
   return message;
 }
 
+// GET 按创建时间和编号倒序返回最近二十条笔记。
 export async function GET() {
   try {
     const db = getDb();
@@ -33,9 +37,10 @@ export async function GET() {
   }
 }
 
+// POST 校验笔记标题后写入 D1 数据库，并返回新建记录。
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as {
+    const payload = (await request.json()) as /* 定义新建笔记请求的可选标题和正文。 */ {
       title?: string;
       content?: string;
     };

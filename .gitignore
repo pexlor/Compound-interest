@@ -30,6 +30,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -43,3 +44,8 @@ next-env.d.ts
 /.worktrees/
 .ffcode
 .context
+
+# frontend build and local dependencies
+/frontend/node_modules/
+/frontend/dist/
+/frontend/tsconfig.tsbuildinfo

@@ -1,3 +1,5 @@
+# 构建前端静态页面，并通过 Nginx 提供页面与 API 代理。
+
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package.json ./

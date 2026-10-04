@@ -1,271 +1,160 @@
+// 资产 HTTP 接口：查询、新增、部分更新和归档资产，并记录变更快照。
+
 package httpapi
 
 import (
 	"database/sql"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"fulibu-go/internal/service"
 )
 
-// scanAsset 将数据库查询结果扫描为资产实体。
-func scanAsset(s interface{ Scan(...any) error }) (asset, error) {
-	var x asset
-	e := s.Scan(&x.ID, &x.UserID, &x.Name, &x.Category, &x.Code, &x.Amount, &x.Quantity, &x.Currency, &x.AnnualRate, &x.InvestmentStrategy, &x.InvestmentAmount, &x.Note, &x.CreatedAt)
-	return x, e
-}
+// listAssets 读取当前用户尚未归档的资产列表。
+func (a *app) listAssets(id int64) ([]asset, error) { return service.ListAssets(a.db, id, false) }
 
-const assetCols = "id,user_id,name,category,code,amount,quantity,currency,annual_rate,investment_strategy,investment_amount,note,created_at"
-
-// listAssets 读取用户的全部资产。
-func (a *app) listAssets(id int64) ([]asset, error) {
-	rows, e := a.db.Query("SELECT "+assetCols+" FROM assets WHERE user_id=? ORDER BY id", id)
-	if e != nil {
-		return nil, e
-	}
-	defer rows.Close()
-	v := []asset{}
-	for rows.Next() {
-		x, e := scanAsset(rows)
-		if e != nil {
-			return nil, e
-		}
-		v = append(v, x)
-	}
-	return v, rows.Err()
-}
-
-// money 校验金额并转换为以分为单位的整数。
-func money(n float64) (int64, bool) {
-	if math.IsNaN(n) || math.IsInf(n, 0) || n <= 0 || n > maxMoney {
-		return 0, false
-	}
-	return int64(math.Round(n * 100)), true
-}
-
-// currency 判断币种是否在系统支持范围内。
-func currency(s string) bool {
-	switch s {
-	case "CNY", "USD", "HKD", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "CHF":
-		return true
-	}
-	return false
-}
-
-// assets 分派资产的查询、新增、更新和删除请求。
+// assets 处理资产列表查询、新增和部分更新请求，并统一执行事务变更。
 func (a *app) assets(w http.ResponseWriter, r *http.Request) {
 	u := a.need(w, r)
 	if u == nil {
 		return
 	}
 	switch r.Method {
-	case "GET":
-		v, e := a.listAssets(u.ID)
-		if e != nil {
-			fail(w, 500, e.Error())
+	case http.MethodGet:
+		include := r.URL.Query().Get("includeArchived")
+		if include != "" && include != "true" && include != "false" {
+			writeAPIError(w, badRequest("includeArchived 必须为 true 或 false"))
 			return
 		}
-		out(w, 200, map[string]any{"assets": v})
-	case "POST":
-		a.addAsset(w, r, u)
-	case "DELETE":
-		id, e := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
-		if e != nil || id < 1 {
-			fail(w, 400, "无效资产")
-			return
-		}
-		res, e := a.db.Exec("DELETE FROM assets WHERE id=? AND user_id=?", id, u.ID)
-		if e != nil {
-			fail(w, 500, e.Error())
-			return
-		}
-		n, _ := res.RowsAffected()
-		if n == 0 {
-			fail(w, 404, "资产不存在")
-		} else {
-			snapshot, snapshotErr := a.ledger.Snapshot(u.ID, "asset_change")
-			if snapshotErr != nil {
-				snapshot = false
-			}
-			out(w, 200, map[string]any{"ok": true, "snapshot": snapshot})
-		}
-	case "PATCH":
-		a.patchAsset(w, r, u)
-	default:
-		fail(w, 405, "方法不允许")
-	}
-}
-
-// addAsset 校验并创建一项资产，同时记录历史快照。
-func (a *app) addAsset(w http.ResponseWriter, r *http.Request, u *user) {
-	var x struct {
-		Name, Category, Code, Currency, Note, InvestmentStrategy string
-		Amount, Quantity, AnnualRate, InvestmentAmount           float64
-	}
-	if body(r, &x) != nil {
-		fail(w, 400, "请求无效")
-		return
-	}
-	x.Name = strings.TrimSpace(x.Name)
-	x.Category = strings.TrimSpace(x.Category)
-	x.Currency = strings.ToUpper(strings.TrimSpace(x.Currency))
-	if x.Currency == "" {
-		x.Currency = "CNY"
-	}
-	m, ok := money(x.Amount)
-	if !ok || x.Name == "" || len([]rune(x.Name)) > 120 || !currency(x.Currency) {
-		fail(w, 400, "请填写有效的资产名称和金额")
-		return
-	}
-	if x.Category != "stock" && x.Category != "fund" && x.Category != "money" && x.Category != "deposit" && x.Category != "housing" && x.Category != "fixed" {
-		fail(w, 400, "暂不支持这个资产类别")
-		return
-	}
-	var q any = nil
-	if x.Category == "stock" || x.Category == "fund" {
-		if strings.TrimSpace(x.Code) == "" || x.Quantity <= 0 {
-			fail(w, 400, "请输入有效的代码和持有数量")
-			return
-		}
-		q = x.Quantity
-	}
-	strategy := x.InvestmentStrategy
-	if strategy == "" {
-		strategy = "none"
-	}
-	if strategy != "none" && strategy != "monthly" && strategy != "weekly" && strategy != "yearly" && strategy != "daily" {
-		fail(w, 400, "基金定投策略无效")
-		return
-	}
-	var invest any = nil
-	if strategy != "none" {
-		z, valid := money(x.InvestmentAmount)
-		if x.Category != "fund" || !valid {
-			fail(w, 400, "基金定投策略或金额无效")
-			return
-		}
-		invest = z
-	}
-	res, e := a.db.Exec("INSERT INTO assets(user_id,name,category,code,amount,quantity,currency,annual_rate,investment_strategy,investment_amount,note) VALUES(?,?,?,?,?,?,?,?,?,?,?)", u.ID, x.Name, x.Category, nullString(strings.ToUpper(strings.TrimSpace(x.Code))), m, q, x.Currency, x.AnnualRate, strategy, invest, strings.TrimSpace(x.Note))
-	if e != nil {
-		fail(w, 500, e.Error())
-		return
-	}
-	id, _ := res.LastInsertId()
-	row, e := scanAsset(a.db.QueryRow("SELECT "+assetCols+" FROM assets WHERE id=?", id))
-	if e != nil {
-		fail(w, 500, e.Error())
-		return
-	}
-	snapshot, snapshotErr := a.ledger.Snapshot(u.ID, "asset_change")
-	if snapshotErr != nil {
-		snapshot = false
-	}
-	out(w, 201, map[string]any{"asset": row, "snapshot": snapshot})
-}
-
-// nullString 将空字符串转换为数据库 NULL。
-func nullString(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
-// patchAsset 更新资产市值、持有数量、币种和定投设置。
-func (a *app) patchAsset(w http.ResponseWriter, r *http.Request, u *user) {
-	var x struct {
-		ID                 int64    `json:"id"`
-		Amount             *float64 `json:"amount"`
-		Quantity           *float64 `json:"quantity"`
-		Currency           *string  `json:"currency"`
-		AnnualRate         *float64 `json:"annualRate"`
-		InvestmentStrategy *string  `json:"investmentStrategy"`
-		InvestmentAmount   *float64 `json:"investmentAmount"`
-	}
-	if body(r, &x) != nil || x.ID < 1 {
-		fail(w, 400, "无效资产")
-		return
-	}
-	if x.Amount != nil {
-		m, ok := money(*x.Amount)
-		if !ok || x.Currency == nil || !currency(strings.ToUpper(*x.Currency)) {
-			fail(w, 400, "请填写有效的当前市值")
-			return
-		}
-		var category string
-		if err := a.db.QueryRow("SELECT category FROM assets WHERE id=? AND user_id=?", x.ID, u.ID).Scan(&category); err != nil {
-			if err == sql.ErrNoRows {
-				fail(w, 404, "资产不存在")
-			} else {
-				fail(w, 500, err.Error())
-			}
-			return
-		}
-		strategy := "none"
-		var investment any = nil
-		if x.InvestmentStrategy != nil {
-			strategy = strings.TrimSpace(*x.InvestmentStrategy)
-			if strategy != "none" && strategy != "monthly" && strategy != "weekly" && strategy != "yearly" && strategy != "daily" {
-				fail(w, 400, "基金定投策略无效")
+		if raw := r.URL.Query().Get("id"); raw != "" {
+			id, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || id < 1 {
+				writeAPIError(w, badRequest("无效资产 ID"))
 				return
 			}
-			if strategy != "none" {
-				if category != "fund" {
-					fail(w, 400, "只有基金支持定投")
-					return
-				}
-				if x.InvestmentAmount == nil {
-					fail(w, 400, "请输入有效定投金额")
-					return
-				}
-				value, valid := money(*x.InvestmentAmount)
-				if !valid {
-					fail(w, 400, "请输入有效定投金额")
-					return
-				}
-				investment = value
+			v, err := service.GetAsset(a.db, u.ID, id, include == "true")
+			if err != nil {
+				writeAPIError(w, err)
+				return
 			}
-		}
-		var res sql.Result
-		var e error
-		if x.InvestmentStrategy != nil {
-			res, e = a.db.Exec("UPDATE assets SET amount=?,quantity=COALESCE(?,quantity),currency=?,investment_strategy=?,investment_amount=? WHERE id=? AND user_id=?", m, x.Quantity, strings.ToUpper(*x.Currency), strategy, investment, x.ID, u.ID)
-		} else {
-			res, e = a.db.Exec("UPDATE assets SET amount=?,quantity=COALESCE(?,quantity),currency=? WHERE id=? AND user_id=?", m, x.Quantity, strings.ToUpper(*x.Currency), x.ID, u.ID)
-		}
-		if e != nil {
-			fail(w, 500, e.Error())
+			out(w, 200, map[string]any{"asset": v, "moneyUnit": "minor"})
 			return
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			fail(w, 404, "资产不存在")
+		v, err := service.ListAssets(a.db, u.ID, include == "true")
+		if err != nil {
+			writeAPIError(w, err)
 			return
 		}
-		snapshot, snapshotErr := a.ledger.Snapshot(u.ID, "asset_change")
-		if snapshotErr != nil {
-			snapshot = false
+		result := []asset{}
+		for _, item := range v {
+			q := r.URL.Query()
+			if name := q.Get("name"); name != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(name)) {
+				continue
+			}
+			if code := q.Get("code"); code != "" && (item.Code == nil || !strings.EqualFold(*item.Code, code)) {
+				continue
+			}
+			if category := q.Get("category"); category != "" && category != item.Category {
+				continue
+			}
+			result = append(result, item)
 		}
-		response := map[string]any{"ok": true, "amount": m, "quantity": x.Quantity, "currency": strings.ToUpper(*x.Currency), "snapshot": snapshot}
-		if x.InvestmentStrategy != nil {
-			response["investmentStrategy"] = strategy
-			response["investmentAmount"] = investment
+		out(w, 200, map[string]any{"assets": result, "moneyUnit": "minor"})
+	case http.MethodPost:
+		var x service.AssetCreate
+		o, err := mutationInput(r, u, &x)
+		if err != nil {
+			writeAPIError(w, err)
+			return
 		}
-		out(w, 200, response)
+		a.mutate(w, r, o /* 在事务中创建资产并记录当天快照，返回新增结果或预览。 */, func(tx *sql.Tx) (service.MutationResult, error) {
+			after, err := service.CreateAsset(tx, u.ID, x)
+			if err != nil {
+				return service.MutationResult{}, err
+			}
+			snapshot, err := service.SnapshotTx(tx, u.ID, "asset_change")
+			if err != nil {
+				return service.MutationResult{}, err
+			}
+			snapshot = snapshot && !o.DryRun
+			return mutationJSON(201, map[string]any{"asset": after, "before": nil, "after": after, "snapshot": snapshot, "dryRun": o.DryRun, "moneyUnit": "minor"})
+		})
+	case http.MethodPatch:
+		var x service.AssetPatch
+		o, err := mutationInput(r, u, &x)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		if x.ID < 1 {
+			writeAPIError(w, badRequest("无效资产 ID"))
+			return
+		}
+		a.mutate(w, r, o /* 检查当前资产版本，保存部分更新并记录快照。 */, func(tx *sql.Tx) (service.MutationResult, error) {
+			before, err := service.GetAsset(tx, u.ID, x.ID, false)
+			if err != nil {
+				return service.MutationResult{}, err
+			}
+			if err = checkVersion(x.Version, before.Version); err != nil {
+				return service.MutationResult{}, err
+			}
+			after, err := service.PatchAsset(tx, u.ID, before, x)
+			if err != nil {
+				return service.MutationResult{}, err
+			}
+			snapshot, err := service.SnapshotTx(tx, u.ID, "asset_change")
+			if err != nil {
+				return service.MutationResult{}, err
+			}
+			snapshot = snapshot && !o.DryRun
+			return mutationJSON(200, map[string]any{"ok": true, "before": before, "after": after, "snapshot": snapshot, "dryRun": o.DryRun, "moneyUnit": "minor"})
+		})
+	default:
+		apiError(w, 405, "method_not_allowed", "方法不允许")
+	}
+}
+
+// archiveAsset 校验资产编号与版本，将资产归档并记录相应快照。
+func (a *app) archiveAsset(w http.ResponseWriter, r *http.Request) {
+	u := a.need(w, r)
+	if u == nil {
 		return
 	}
-	if x.AnnualRate == nil || *x.AnnualRate < -100 || *x.AnnualRate > 1000 {
-		fail(w, 400, "无效的收益率数据")
+	if r.Method != http.MethodPost {
+		apiError(w, 405, "method_not_allowed", "方法不允许")
 		return
 	}
-	res, e := a.db.Exec("UPDATE assets SET annual_rate=? WHERE id=? AND user_id=?", *x.AnnualRate, x.ID, u.ID)
-	if e != nil {
-		fail(w, 500, e.Error())
+	var x /* 承载归档请求的资产编号和预期版本。 */ struct {
+		ID      int64
+		Version *int64
+	}
+	o, err := mutationInput(r, u, &x)
+	if err != nil {
+		writeAPIError(w, err)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		fail(w, 404, "资产不存在")
+	if x.ID < 1 {
+		writeAPIError(w, badRequest("无效资产 ID"))
 		return
 	}
-	out(w, 200, map[string]any{"ok": true, "annualRate": *x.AnnualRate})
+	a.mutate(w, r, o /* 检查资产版本后归档记录，并保存变更后的快照。 */, func(tx *sql.Tx) (service.MutationResult, error) {
+		before, err := service.GetAsset(tx, u.ID, x.ID, false)
+		if err != nil {
+			return service.MutationResult{}, err
+		}
+		if err = checkVersion(x.Version, before.Version); err != nil {
+			return service.MutationResult{}, err
+		}
+		after, err := service.ArchiveAsset(tx, u.ID, x.ID)
+		if err != nil {
+			return service.MutationResult{}, err
+		}
+		snapshot, err := service.SnapshotTx(tx, u.ID, "asset_change")
+		if err != nil {
+			return service.MutationResult{}, err
+		}
+		snapshot = snapshot && !o.DryRun
+		return mutationJSON(200, map[string]any{"ok": true, "before": before, "after": after, "snapshot": snapshot, "dryRun": o.DryRun, "moneyUnit": "minor"})
+	})
 }
