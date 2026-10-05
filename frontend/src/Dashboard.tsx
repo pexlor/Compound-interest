@@ -8,6 +8,7 @@ import type { IncomeSettings, IncomeInput } from "./income";
 import { FormEvent, memo, useCallback, useEffect, useMemo, useState } from "react";
 import { calculatePortfolio, calculatePortfolioSeries } from "./portfolio";
 import { mutationHeaders } from "./mutations";
+import { mergeMarketResults, missingMarketRates, needsMarketRate } from "./market-cache";
 
 // Category 列出仪表盘支持的资产类别。
 type Category = "stock" | "fund" | "money" | "deposit" | "housing" | "fixed";
@@ -16,6 +17,12 @@ type Currency = "CNY" | "USD" | "HKD" | "EUR" | "JPY" | "GBP" | "SGD" | "AUD" | 
 // MarketReturnMeta 描述行情价格、收益率、历史覆盖区间和缓存状态。
 type MarketReturnMeta = {
   annualRate: number;
+  annualReady?: boolean;
+  pending?: boolean;
+  fetchedAt?: string;
+  error?: string;
+  category?: string;
+  code?: string;
   requestedDays: number;
   actualDays: number;
   historyLimited: boolean;
@@ -152,6 +159,8 @@ export default function Dashboard() {
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [marketRates, setMarketRates] = useState<Record<string, MarketReturnMeta>>({});
+  const [marketPending, setMarketPending] = useState(false);
+  const [marketChecked, setMarketChecked] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [income, setIncome] = useState<IncomeSettings>(emptyIncome());
   const [retirement, setRetirement] = useState<Retirement | null>(null);
@@ -177,21 +186,19 @@ export default function Dashboard() {
   const loadMarketRates = useCallback(async (selectedLookback: number, notify = false, signal?: AbortSignal) => {
     setSyncing(true);
     try {
-      const response = await fetch(`/api/market?days=${selectedLookback * 365}`, { signal });
+      const response = await fetch(`/api/market?days=${selectedLookback * 365}${notify ? "&refresh=1" : ""}`, { signal });
       const data = await response.json() as /* 定义批量行情查询响应中的结果列表和逐项错误。 */ { results?: Array<MarketReturnMeta & /* 补充行情结果对应的资产类别与证券代码。 */ { category: string; code: string }>; errors?: unknown[]; error?: string };
       if (response.status === 401) {
         setUser(null);
         return;
       }
       if (!response.ok) throw new Error(data.error || "读取市场收益失败");
-      const next = Object.fromEntries((data.results ?? []).map(/* 将行情结果转换为以类别和代码为键的缓存条目。 */ (result) => [
-        marketKey(result.category, result.code),
-        result,
-      ]));
-      setMarketRates(next);
+      setMarketRates(current => mergeMarketResults(current, data.results ?? [], selectedLookback * 365));
+      setMarketPending((data.results ?? []).some(result => result.pending));
+      setMarketChecked(true);
       if (notify) {
-        const failed = data.errors?.length ?? 0;
-        setToast(failed ? `已读取 ${data.results?.length ?? 0} 项，${failed} 项行情暂不可用` : `已读取 ${data.results?.length ?? 0} 项最新价格与收益率`);
+        const failed = (data.errors?.length ?? 0) + (data.results ?? []).filter(result => result.error && !result.annualReady).length;
+        setToast(data.results?.some(result => result.pending) ? "已开始更新行情，完成后自动显示" : failed ? `已读取 ${data.results?.length ?? 0} 项，${failed} 项行情暂不可用` : `已读取 ${data.results?.length ?? 0} 项最新价格与收益率`);
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
@@ -207,7 +214,7 @@ export default function Dashboard() {
         if (response.status === 401) return null;
         const data = await response.json() as /* 定义仪表盘接口返回的用户、持仓、历史、收入和汇率数据。 */ {
           user?: User; assets?: Asset[]; history?: HistoryEntry[]; income?: IncomeSettings;
-          rates?: Partial<Record<Currency, number>>; date?: string; stale?: boolean; error?: string;
+          rates?: Partial<Record<Currency, number>>; date?: string; stale?: boolean; error?: string; marketResults?: MarketReturnMeta[];
         };
         if (!response.ok) throw new Error(data.error || "读取本地账本失败");
         return data;
@@ -216,6 +223,7 @@ export default function Dashboard() {
         if (!dashboard) return;
         setUser(dashboard.user ?? null);
         setAssets(dashboard.assets ?? []);
+        setMarketRates(mergeMarketResults({}, dashboard.marketResults ?? [], 1095));
         setHistory(dashboard.history ?? []);
         setIncome(dashboard.income ?? emptyIncome());
         setExchangeRates(dashboard.rates ?? { CNY: 1 });
@@ -255,12 +263,14 @@ export default function Dashboard() {
   useEffect(/* 登录后按回溯年限延迟读取行情，并在依赖变化时清理请求。 */ () => {
     if (!user) return;
     const controller = new AbortController();
-    const timer = window.setTimeout(/* 定时触发行情读取，并关联可取消的请求信号。 */ () => void loadMarketRates(lookback, false, controller.signal), 0);
-    return /* 清除延迟任务并取消尚未完成的行情请求。 */ () => {
-      window.clearTimeout(timer);
-      controller.abort();
+    let timer: ReturnType<typeof window.setTimeout>;
+    const poll = async () => {
+      await loadMarketRates(lookback, false, controller.signal);
+      if (!controller.signal.aborted) timer = window.setTimeout(poll, marketPending ? 3000 : 60000);
     };
-  }, [loadMarketRates, lookback, user]);
+    timer = window.setTimeout(poll, 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [loadMarketRates, lookback, user, marketPending]);
 
   useEffect(/* 为临时提示设置自动清除定时器，并在卸载时清理。 */ () => {
     if (!toast) return;
@@ -271,7 +281,7 @@ export default function Dashboard() {
   const displayAssets = useMemo(/* 缓存合并行情后的展示资产，减少重复处理持仓数据。 */ () => assets.map(/* 合并证券行情与持仓记录，保留没有行情的原资产数据。 */ (asset) => {
     if (!asset.code) return asset;
     const marketReturn = marketRates[marketKey(asset.category, asset.code)];
-    if (!marketReturn) return asset;
+    if (!marketReturn || marketReturn.requestedDays !== lookback * 365 || marketReturn.annualReady !== true) return asset;
     // 行情加载是异步的；不要在它返回后用“数量 × 最新价”临时改写
     // 已保存的资产金额，否则页面打开后总资产会发生一次视觉跳变。
     // 用户在新增或编辑资产时，才会明确以实时价格保存新的金额。
@@ -280,7 +290,7 @@ export default function Dashboard() {
       annual_rate: marketReturn.annualRate,
       market_return: marketReturn,
     };
-  }), [assets, marketRates]);
+  }), [assets, marketRates, lookback]);
   // A quote refresh is an enhancement, not a prerequisite for showing the
   // portfolio: each asset already stores its last known market value. Only a
   // genuinely missing currency conversion should block the aggregate view.
@@ -323,6 +333,8 @@ export default function Dashboard() {
   const assetPageCount = Math.max(1, Math.ceil(filtered.length / ASSET_PAGE_SIZE));
   const currentAssetPage = Math.min(assetPage, assetPageCount - 1);
   const pagedAssets = filtered.slice(currentAssetPage * ASSET_PAGE_SIZE, currentAssetPage * ASSET_PAGE_SIZE + ASSET_PAGE_SIZE);
+  const missingHistoricalRates = missingMarketRates(assets, marketRates, lookback * 365).length > 0;
+  const forecastRateStatus = !marketChecked || marketPending || syncing ? "正在计算" : "年化暂不可用";
   const limitedHistoryCount = displayAssets.filter(/* 筛选历史价格覆盖不足的证券资产。 */ (asset) => asset.market_return?.historyLimited).length;
   const selectedMarket = selected ? displayAssets.find(/* 从最新展示资产中查找当前选中资产。 */ (asset) => asset.id === selected.id) ?? selected : null;
   const chartValues = portfolioSeries?.map(/* 提取每年的预测总额，作为收益增长图的数值。 */ (item) => item.forecast) ?? [];
@@ -388,7 +400,7 @@ export default function Dashboard() {
         const market = await marketResponse.json();
         if (!marketResponse.ok && quantityAsset) throw new Error(market.error || "暂时无法读取实时价格");
         if (marketResponse.ok) {
-          rate = Number(market.annualRate.toFixed(2));
+          if (market.annualReady === true) rate = Number(market.annualRate.toFixed(2));
           marketReturn = market as MarketReturnMeta;
         }
       }
@@ -411,7 +423,7 @@ export default function Dashboard() {
       }
       if (!response.ok) return setToast(data.error || "保存失败，请重试");
       setAssets(/* 把新建资产追加到最新持仓状态中。 */ (current) => [...current, data.asset]);
-      if (marketReturn) setMarketRates(/* 将最新行情合并到现有缓存，保留其他证券的数据。 */ (current) => ({ ...current, [marketKey(category, code)]: marketReturn! }));
+      if (marketReturn?.annualReady === true) setMarketRates(/* 将最新行情合并到现有缓存，保留其他证券的数据。 */ (current) => ({ ...current, [marketKey(category, code)]: marketReturn! }));
       await refreshHistory();
       setModalOpen(false);
       setToast(data.snapshot ? "资产已加入总览，今日历史已更新" : "资产已加入；汇率不完整，今日历史暂未更新");
@@ -567,10 +579,10 @@ export default function Dashboard() {
           <article className="total-card">
             <div className="card-label"><span>总资产 · 折合人民币</span><button className={`exchange-status${exchangeStale ? " stale" : ""}`} onClick={refreshExchangeRates} disabled={exchangeLoading}>{exchangeLoading ? "正在读取汇率…" : exchangeDate ? `${exchangeDate} 汇率 · 读取缓存` : "读取汇率缓存"}</button></div>
             <div className="total-value">{missingExchangeRate ? "行情或汇率暂不可用" : money(total)}</div>
-            <div className="change-row"><span className="change-pill">汇率折算</span><span>本月预估增长 {missingForecastExchangeRate ? "等待汇率" : money(expectedGain / Math.max(1, horizon * 12))}</span></div>
+            <div className="change-row"><span className="change-pill">汇率折算</span><span>本月预估增长 {missingForecastExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : money(expectedGain / Math.max(1, horizon * 12))}</span></div>
             <div className="mini-stats">
               <div><span>可产生收益</span><strong>{missingExchangeRate ? "等待汇率" : money(total - (grouped.find(/* 查找固定资产分组，用于显示固定资产总额。 */ (g) => g.category === "fixed")?.amount || 0))}</strong></div>
-              <div><span>组合预期年化（根据最近{lookback}年数据计算）</span><strong>{missingExchangeRate ? "等待汇率" : `${weightedRate.toFixed(2)}%`}</strong><small className="portfolio-rate-note">{limitedHistoryCount ? `其中 ${limitedHistoryCount} 项历史不足` : "\u00a0"}</small></div>
+              <div><span>组合预期年化（根据最近{lookback}年数据计算）</span><strong>{missingExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : `${weightedRate.toFixed(2)}%`}</strong><small className="portfolio-rate-note">{limitedHistoryCount ? `其中 ${limitedHistoryCount} 项历史不足` : "\u00a0"}</small></div>
             </div>
           </article>
 
@@ -597,8 +609,8 @@ export default function Dashboard() {
           <div className="forecast-copy">
             <span className="card-kicker">未来收益推演</span>
             <h2>{horizon} 年后，预计拥有</h2>
-            <div className="forecast-number">{missingForecastExchangeRate ? "等待汇率" : money(forecast)}</div>
-            <p>仅现有资产计算复利，未来新增资金只计本金。预计新增 <b>{missingForecastExchangeRate ? "等待汇率" : money(expectedGain)}</b>{income.monthly_savings > 0 || income.annual_bonus > 0 || (income.options?.length ?? 0) > 0 ? `（含储蓄、年终奖与期权净收入 ${(missingForecastExchangeRate ? "等待汇率" : money(savingsContribution))}）` : ""}</p>
+            <div className="forecast-number">{missingForecastExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : money(forecast)}</div>
+            <p>仅现有资产计算复利，未来新增资金只计本金。预计新增 <b>{missingForecastExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : money(expectedGain)}</b>{income.monthly_savings > 0 || income.annual_bonus > 0 || (income.options?.length ?? 0) > 0 ? `（含储蓄、年终奖与期权净收入 ${(missingForecastExchangeRate ? "等待汇率" : money(savingsContribution))}）` : ""}</p>
             <form className="retirement-form" onSubmit={saveRetirement}>
               <div><span className="card-kicker">退休目标资产</span><strong>{retirement?.target_cny ? `${retirement.progress.toFixed(1)}% 已完成` : "添加退休后希望拥有的资产"}</strong>
                 {retirement?.target_cny ? <small>当前 {money(retirement.current_cny)} / 目标 {money(retirement.target_cny)} · {retirement.projected_years === null ? (retirement.missing_currencies?.length ? `等待汇率：${retirement.missing_currencies.join("、")}` : "按当前计划暂无法预计完成时间") : retirement.projected_years === 0 ? "已达成" : `预计 ${retirement.projected_date ?? ""} 达成（${retirement.projected_years.toFixed(1)} 年后）`}</small> : <small>仅现有资产计算收益；未来储蓄、年终奖及期权按到账日期计入本金。</small>}</div>
@@ -613,13 +625,13 @@ export default function Dashboard() {
               <div className="segmented">{[1, 3, 5, 10].map(/* 为每个可选预测年限渲染切换按钮。 */ (year) => <button className={horizon === year ? "active" : ""} key={year} onClick={/* 更新收益预测年限。 */ () => setHorizon(year)}>{year}年</button>)}</div>
             </div>
             <div className="sync-row">
-              <label>历史区间<select value={lookback} onChange={/* 更新历史收益回溯年限。 */ (event) => setLookback(Number(event.target.value))}><option value="1">近1年</option><option value="3">近3年</option><option value="5">近5年</option><option value="10">近10年</option></select></label>
+              <label>历史区间<select value={lookback} onChange={(event) => { setLookback(Number(event.target.value)); setMarketChecked(false); }}><option value="1">近1年</option><option value="3">近3年</option><option value="5">近5年</option><option value="10">近10年</option></select></label>
               <button onClick={syncMarketRates} disabled={syncing}>{syncing ? "读取中…" : "刷新价格与收益率"}</button>
             </div>
           </div>
           <div className="chart-wrap" aria-label={`未来 ${horizon} 年资产预测折线图`}>
             <div className="chart-top"><span>资产增长曲线</span><span className="forecast-legend"><i /> 现有资产复利 + 未来新增本金</span></div>
-            {!missingForecastExchangeRate ? <div className="chart">
+            {!missingForecastExchangeRate && !missingHistoricalRates ? <div className="chart">
               <span className="y-label top">{money(maxChart)}</span><span className="y-label bottom">{money(minChart)}</span>
               <div className="gridline gridline-1"/><div className="gridline gridline-2"/><div className="gridline gridline-3"/>
               <div className="bars">
@@ -628,7 +640,7 @@ export default function Dashboard() {
                   return <div className="bar-column" key={index}><span className="bar-value">{index === chartValues.length - 1 ? `+${money(value - total)}` : ""}</span><div className="bar" style={{ height: `${height}%` }} /><small>{index === 0 ? "现在" : `${index}年`}</small></div>;
                 })}
               </div>
-            </div> : <div className="unavailable-chart">等待完整汇率后显示预测曲线</div>}
+            </div> : <div className="unavailable-chart">{missingForecastExchangeRate ? "等待完整汇率后显示预测曲线" : `${forecastRateStatus}，历史数据补齐后显示预测曲线`}</div>}
             <p className="disclaimer">预测基于历史收益率与输入利率，并在月末计入储蓄、在领取或变现日期计入年终奖和期权净收入，新增资金只计本金，只有现有资产参与复利；外币按当前汇率不变测算，不代表实际收益或投资承诺。</p>
           </div>
         </section>
@@ -651,8 +663,8 @@ export default function Dashboard() {
                 <span className="asset-main"><strong>{asset.name}</strong><small>{meta.name}{asset.code ? ` · ${asset.code}` : ""}{asset.quantity ? ` · ${quantityText(asset.quantity)} ${asset.category === "stock" ? "股" : "份"}` : ""}{asset.category === "fund" && asset.investment_strategy && asset.investment_strategy !== "none" ? ` · 定投${asset.investment_amount ? ` ${asset.investment_amount / 100}` : ""}` : ""} · {asset.note}</small></span>
                 <span className="asset-rate">
                   <small>{asset.category === "fixed" ? "不计收益" : "预测年化"}</small>
-                  <strong className={asset.annual_rate < 0 ? "negative" : ""}>{asset.category === "fixed" ? "—" : `${asset.annual_rate.toFixed(2)}%`}</strong>
-                  <em className={asset.market_return?.historyLimited ? "asset-rate-note limited" : "asset-rate-note"}>{asset.market_return?.historyLimited ? <>历史不足，使用 {asset.market_return.actualDays} 天的数据计算</> : asset.market_return?.stale ? `旧数据 · ${asset.market_return.calculationDate}` : "\u00a0"}</em>
+                  <strong className={asset.annual_rate < 0 ? "negative" : ""}>{asset.category === "fixed" ? "—" : needsMarketRate(asset) && !asset.market_return ? forecastRateStatus : `${asset.annual_rate.toFixed(2)}%`}</strong>
+                  <em className={asset.market_return?.historyLimited ? "asset-rate-note limited" : "asset-rate-note"}>{asset.market_return?.historyLimited ? <>历史不足，使用 {asset.market_return.actualDays} 天的数据计算</> : asset.market_return?.stale ? `旧数据 · ${asset.market_return.endDate}` : asset.market_return ? `数据截至 ${asset.market_return.endDate}` : "\u00a0"}</em>
                 </span>
                 <span className="asset-amount"><strong>{originalMoney(asset.amount, asset.currency)}</strong><small>{asset.quantity && asset.market_return?.currentPrice ? `${quantityText(asset.quantity)} × ${priceText(asset.market_return.currentPrice, asset.currency)}` : asset.currency === "CNY" ? "人民币" : exchangeRates[asset.currency] ? `≈ ${money(cnyAmount)} · ${currencyMeta[asset.currency]}` : "等待汇率"}{!missingExchangeRate && total && cnyAmount ? ` · ${(cnyAmount / total * 100).toFixed(1)}%` : ""}</small></span>
                 <span className="chevron">›</span>
