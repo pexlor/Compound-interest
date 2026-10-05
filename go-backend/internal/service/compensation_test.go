@@ -81,3 +81,24 @@ func TestBonusWithoutScheduleDoesNotProduceProceeds(t *testing.T) {
 		t.Fatalf("undated bonus generated proceeds: %+v", events)
 	}
 }
+
+// 新增资金只能帮助积累本金，不能单独产生收益使退休目标提前达成。
+func TestRetirementCompoundsOnlyExistingAssets(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		current, target, monthly int64
+		events                   []Cashflow
+		want                     string
+	}{
+		{"future_cash_has_no_growth", 0, 11000, 0, []Cashflow{{Date: "2026-01-02", Amount: 10000, Currency: "CNY"}}, ""},
+		{"existing_assets_still_grow", 10000, 30000, 0, []Cashflow{{Date: "2026-01-02", Amount: 10000, Currency: "CNY"}}, "2027-01-02"},
+		{"monthly_savings_have_no_growth", 0, 13000, 1000, nil, "2027-01-31"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ProjectRetirement(day("2026-01-01"), tc.current, tc.target, 100, tc.monthly, tc.events, map[string]float64{"CNY": 1})
+			if got != tc.want {
+				t.Fatalf("date=%s want=%s", got, tc.want)
+			}
+		})
+	}
+}

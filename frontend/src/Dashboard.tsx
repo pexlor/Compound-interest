@@ -7,6 +7,7 @@ import type { IncomeSettings, IncomeInput } from "./income";
 
 import { FormEvent, memo, useCallback, useEffect, useMemo, useState } from "react";
 import { calculatePortfolio, calculatePortfolioSeries } from "./portfolio";
+import { mutationHeaders } from "./mutations";
 
 // Category 列出仪表盘支持的资产类别。
 type Category = "stock" | "fund" | "money" | "deposit" | "housing" | "fixed";
@@ -61,8 +62,6 @@ type Retirement = { target_cny: number; current_cny: number; progress: number; p
 // emptyIncome 构造带初始版本和上海日期的空收入设置。
 const emptyIncome = (): IncomeSettings => ({ version: 0, monthly_salary: 0, monthly_savings: 0, annual_bonus: 0, updated_at: null, bonus_settings: null, options: [], cashflows: [], forecast_as_of: new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" }) });
 
-// mutationHeaders 为 JSON 写请求生成内容类型和唯一幂等键。
-const mutationHeaders = () => ({ "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() });
 
 const categoryMeta: Record<Category, /* 定义资产类别的中文名称、缩写和展示颜色。 */ { name: string; short: string; color: string }> = {
   stock: { name: "股票", short: "股", color: "#ee6a4d" },
@@ -599,10 +598,10 @@ export default function Dashboard() {
             <span className="card-kicker">未来收益推演</span>
             <h2>{horizon} 年后，预计拥有</h2>
             <div className="forecast-number">{missingForecastExchangeRate ? "等待汇率" : money(forecast)}</div>
-            <p>按当前组合复利并计入储蓄，预计新增 <b>{missingForecastExchangeRate ? "等待汇率" : money(expectedGain)}</b>{income.monthly_savings > 0 || income.annual_bonus > 0 || (income.options?.length ?? 0) > 0 ? `（含储蓄、年终奖与期权净收入 ${(missingForecastExchangeRate ? "等待汇率" : money(savingsContribution))}）` : ""}</p>
+            <p>仅现有资产计算复利，未来新增资金只计本金。预计新增 <b>{missingForecastExchangeRate ? "等待汇率" : money(expectedGain)}</b>{income.monthly_savings > 0 || income.annual_bonus > 0 || (income.options?.length ?? 0) > 0 ? `（含储蓄、年终奖与期权净收入 ${(missingForecastExchangeRate ? "等待汇率" : money(savingsContribution))}）` : ""}</p>
             <form className="retirement-form" onSubmit={saveRetirement}>
               <div><span className="card-kicker">退休目标资产</span><strong>{retirement?.target_cny ? `${retirement.progress.toFixed(1)}% 已完成` : "添加退休后希望拥有的资产"}</strong>
-                {retirement?.target_cny ? <small>当前 {money(retirement.current_cny)} / 目标 {money(retirement.target_cny)} · {retirement.projected_years === null ? (retirement.missing_currencies?.length ? `等待汇率：${retirement.missing_currencies.join("、")}` : "按当前计划暂无法预计完成时间") : retirement.projected_years === 0 ? "已达成" : `预计 ${retirement.projected_date ?? ""} 达成（${retirement.projected_years.toFixed(1)} 年后）`}</small> : <small>将按当前资产、收益率、每月储蓄以及年终奖和期权到账日期测算。</small>}</div>
+                {retirement?.target_cny ? <small>当前 {money(retirement.current_cny)} / 目标 {money(retirement.target_cny)} · {retirement.projected_years === null ? (retirement.missing_currencies?.length ? `等待汇率：${retirement.missing_currencies.join("、")}` : "按当前计划暂无法预计完成时间") : retirement.projected_years === 0 ? "已达成" : `预计 ${retirement.projected_date ?? ""} 达成（${retirement.projected_years.toFixed(1)} 年后）`}</small> : <small>仅现有资产计算收益；未来储蓄、年终奖及期权按到账日期计入本金。</small>}</div>
               <label><span>资产类型</span><select name="category" defaultValue="deposit"><option value="deposit">存款</option><option value="fund">基金</option><option value="stock">股票</option><option value="housing">房产</option><option value="fixed">其他资产</option></select></label>
               <label><span>目标资产名称</span><input name="name" required placeholder="例如：养老年金" /></label><label><span>金额</span><input name="amount" type="number" min="0.01" step="0.01" required placeholder="例如 1000000" /></label><label><span>币种</span><select name="currency" defaultValue="CNY"><option>CNY</option><option>USD</option><option>HKD</option><option>EUR</option></select></label>
               <button disabled={savingRetirement}>{savingRetirement ? "添加中…" : "添加目标资产"}</button>
@@ -619,7 +618,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="chart-wrap" aria-label={`未来 ${horizon} 年资产预测折线图`}>
-            <div className="chart-top"><span>资产增长曲线</span><span className="forecast-legend"><i /> 历史收益率外推 + 收入到账计划</span></div>
+            <div className="chart-top"><span>资产增长曲线</span><span className="forecast-legend"><i /> 现有资产复利 + 未来新增本金</span></div>
             {!missingForecastExchangeRate ? <div className="chart">
               <span className="y-label top">{money(maxChart)}</span><span className="y-label bottom">{money(minChart)}</span>
               <div className="gridline gridline-1"/><div className="gridline gridline-2"/><div className="gridline gridline-3"/>
@@ -630,7 +629,7 @@ export default function Dashboard() {
                 })}
               </div>
             </div> : <div className="unavailable-chart">等待完整汇率后显示预测曲线</div>}
-            <p className="disclaimer">预测基于历史收益率与输入利率，并在月末计入储蓄、在领取或变现日期计入年终奖和期权净收入，到账后参与复利；外币按当前汇率不变测算，不代表实际收益或投资承诺。</p>
+            <p className="disclaimer">预测基于历史收益率与输入利率，并在月末计入储蓄、在领取或变现日期计入年终奖和期权净收入，新增资金只计本金，只有现有资产参与复利；外币按当前汇率不变测算，不代表实际收益或投资承诺。</p>
           </div>
         </section>
 

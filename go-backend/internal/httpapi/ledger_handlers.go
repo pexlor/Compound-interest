@@ -116,10 +116,8 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 	if u == nil {
 		return
 	}
-	// Opening the dashboard is also a useful observation point for the user's
-	// current total.  The daily uniqueness constraint makes repeated opens
-	// update today's single row instead of creating duplicates.
-	snapshotRecorded, _ := a.snapshotCurrentAssets(u.ID, "dashboard_open")
+	// 首屏只读取本地账本，外部行情由显式刷新及定时任务更新。
+	// 行情服务不可用时，也必须立即显示已经保存的资产。
 	assets, e := a.listAssets(u.ID)
 	if e != nil {
 		fail(w, 500, e.Error())
@@ -140,7 +138,7 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, e.Error())
 		return
 	}
-	out(w, 200, map[string]any{"user": u, "assets": assets, "history": history, "income": income, "rates": rates, "date": date, "stale": date == "", "snapshotRecorded": snapshotRecorded})
+	out(w, 200, map[string]any{"user": u, "assets": assets, "history": history, "income": income, "rates": rates, "date": date, "stale": date == "", "snapshotRecorded": false})
 }
 
 // snapshotCurrentAssets refreshes quote-based holdings first, then records the

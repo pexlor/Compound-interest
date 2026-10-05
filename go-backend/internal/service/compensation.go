@@ -159,9 +159,7 @@ func CompensationEvents(i Income, start, end time.Time) []Cashflow {
 	return events
 }
 
-// ProjectRetirement compounds daily and credits savings on calendar month ends.
-// Lump sums only start growing after the actual cash date.
-// ProjectRetirement 按日复利、月末储蓄和实际现金到账日期，预测未来一百年内首次达到退休目标的日期。
+// ProjectRetirement 仅对现有资产按日复利，未来储蓄及现金流按到账日累计本金。
 func ProjectRetirement(start time.Time, current, target int64, annualRate float64, monthly int64, events []Cashflow, rates map[string]float64) string {
 	if target <= 0 {
 		return ""
@@ -175,16 +173,18 @@ func ProjectRetirement(start time.Time, current, target int64, annualRate float6
 			byDate[e.Date] += float64(e.Amount) * rate
 		}
 	}
-	balance := float64(current)
+	existing := float64(current)
+	contributions := 0.0
 	growth := math.Pow(math.Max(0, 1+annualRate/100), 1/365.25)
 	end := start.AddDate(100, 0, 0)
 	for date := start.AddDate(0, 0, 1); !date.After(end); date = date.AddDate(0, 0, 1) {
 		key := date.Format("2006-01-02")
-		balance = balance*growth + byDate[key]
+		existing *= growth
+		contributions += byDate[key]
 		if date.AddDate(0, 0, 1).Month() != date.Month() {
-			balance += float64(monthly)
+			contributions += float64(monthly)
 		}
-		if balance >= float64(target) {
+		if existing+contributions >= float64(target) {
 			return key
 		}
 	}

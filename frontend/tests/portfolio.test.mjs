@@ -14,12 +14,23 @@ test('only counts dated proceeds inside the forecast and converts currency',/* �
  assert.equal(result.forecast,290000);
  assert.equal(result.savingsContribution,280000);
 });
-test('cash proceeds grow only after their arrival',/* 验证现金收入只有到账后才参与复利增长。 */ ()=>{
+test('future cash proceeds count principal without compounding',/* 现有资产计息，未来现金收入无论何时到账都只计本金。 */ ()=>{
  const a=[{category:'deposit',amount:10000,currency:'CNY',annual_rate:10}];
  const early=calculatePortfolio(a,{CNY:1},1,new Date('2026-01-01T00:00:00Z'),0,[{date:'2026-02-01',amount:10000,currency:'CNY'}]);
  const late=calculatePortfolio(a,{CNY:1},1,new Date('2026-01-01T00:00:00Z'),0,[{date:'2027-01-01',amount:10000,currency:'CNY'}]);
- assert.ok(early.forecast>late.forecast);
- assert.ok(Math.abs(late.forecast-21000)<0.1);
+ assert.equal(early.forecast,21000);
+ assert.equal(late.forecast,21000);
+});
+test('monthly savings add principal while only existing assets compound',()=>{
+ const a=[{category:'deposit',amount:10000,currency:'CNY',annual_rate:10}];
+ const result=calculatePortfolio(a,{CNY:1},1,new Date('2026-01-01T00:00:00Z'),1000,[]);
+ assert.equal(result.savingsContribution,12000);
+ assert.equal(result.forecast,23000);
+});
+test('future fund contributions add principal without investment returns',()=>{
+ const a=[{category:'fund',code:'016452',amount:10000,currency:'CNY',annual_rate:10,investment_strategy:'monthly',investment_amount:1000}];
+ const result=calculatePortfolio(a,{CNY:1},1,new Date('2026-01-01T00:00:00Z'));
+ assert.equal(result.forecast,23000);
 });
 test('missing proceeds exchange rate prevents an incomplete forecast',/* 验证预测区间内缺失现金流汇率时不返回不完整预测。 */ ()=>{
  assert.equal(calculatePortfolio(assets,{CNY:1},1,new Date('2026-01-01T00:00:00Z'),0,[{date:'2026-04-15',amount:100,currency:'USD'}]),null);

@@ -413,51 +413,121 @@ func fetchHistoricalUSDCNY(client *http.Client, date string) (float64, error) {
 }
 
 // fetchFundMarket 读取东方财富基金历史净值，计算实际覆盖区间内的年化收益率。
-func fetchFundMarket(client *http.Client, code string, days int, current float64, priceDate string) (marketResult, error) {
-	endpoint := "https://api.fund.eastmoney.com/f10/lsjz?" + url.Values{"fundCode": {code}, "pageIndex": {"1"}, "pageSize": {"100"}}.Encode()
-	request, _ := http.NewRequest(http.MethodGet, endpoint, nil)
+// fundHistoryPage 保留接口实际分页信息，不假设请求的pageSize会被采用。
+type fundNAVRow struct {
+	Date     string `json:"FSRQ"`
+	NAV      string `json:"DWJZ"`
+	TotalNAV string `json:"LJJZ"`
+}
+type fundHistoryPage struct {
+	Data struct {
+		List []fundNAVRow `json:"LSJZList"`
+	} `json:"Data"`
+	TotalCount int
+	PageSize   int
+	ErrCode    int
+	ErrMsg     string
+}
+
+func fetchFundHistoryPage(client *http.Client, code, endDate string, pageIndex int) (fundHistoryPage, error) {
+	params := url.Values{"fundCode": {code}, "pageIndex": {strconv.Itoa(pageIndex)}, "pageSize": {"20"}}
+	if endDate != "" {
+		params.Set("endDate", endDate)
+	}
+	request, err := http.NewRequest(http.MethodGet, "https://api.fund.eastmoney.com/f10/lsjz?"+params.Encode(), nil)
+	if err != nil {
+		return fundHistoryPage{}, err
+	}
 	request.Header.Set("Referer", "https://fundf10.eastmoney.com/")
 	response, err := client.Do(request)
 	if err != nil {
-		return marketResult{}, err
+		return fundHistoryPage{}, err
 	}
 	defer response.Body.Close()
-	var payload /* 对应基金历史净值接口的完整响应。 */ struct {
-		Data /* 保存基金历史净值列表。 */ struct {
-			List [] /* 对应一条历史基金净值的日期、单位净值和累计净值。 */ struct {
-				Date     string `json:"FSRQ"`
-				NAV      string `json:"DWJZ"`
-				TotalNAV string `json:"LJJZ"`
-			} `json:"LSJZList"`
-		} `json:"Data"`
+	var page fundHistoryPage
+	if response.StatusCode != http.StatusOK {
+		return page, fmt.Errorf("东方财富基金历史净值返回HTTP %d", response.StatusCode)
 	}
-	if response.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload) != nil || len(payload.Data.List) < 2 {
-		return marketResult{}, fmt.Errorf("东方财富基金历史净值不可用")
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&page); err != nil {
+		return page, fmt.Errorf("东方财富基金历史净值响应无效: %w", err)
 	}
-	latestRow := payload.Data.List[0]
+	if page.ErrCode != 0 {
+		return page, fmt.Errorf("东方财富基金历史净值错误: %s", page.ErrMsg)
+	}
+	return page, nil
+}
+
+// fetchFundMarket 按回溯日期直接查询历史起点；成立不足时按实际分页获取最早净值。
+func fetchFundMarket(client *http.Client, code string, days int, current float64, priceDate string) (marketResult, error) {
+	page, err := fetchFundHistoryPage(client, code, "", 1)
+	if err != nil {
+		return marketResult{}, err
+	}
+	if len(page.Data.List) < 2 {
+		return marketResult{}, fmt.Errorf("东方财富基金历史净值不足")
+	}
+	latestRow := page.Data.List[0]
 	latestDate, err := time.Parse("2006-01-02", latestRow.Date)
 	if err != nil {
 		return marketResult{}, err
 	}
 	target := latestDate.AddDate(0, 0, -days)
-	oldest := payload.Data.List[len(payload.Data.List)-1]
-	limited := true
-	for _, row := range payload.Data.List {
-		date, e := time.Parse("2006-01-02", row.Date)
-		if e == nil && !date.After(target) {
-			oldest, limited = row, false
-			break
+	oldest := page.Data.List[len(page.Data.List)-1]
+	oldestDate, err := time.Parse("2006-01-02", oldest.Date)
+	if err != nil {
+		return marketResult{}, err
+	}
+	if oldestDate.After(target) {
+		boundary, err := fetchFundHistoryPage(client, code, target.Format("2006-01-02"), 1)
+		if err != nil {
+			return marketResult{}, err
+		}
+		if len(boundary.Data.List) > 0 {
+			oldest = boundary.Data.List[0]
+			date, err := time.Parse("2006-01-02", oldest.Date)
+			if err != nil || date.After(target) {
+				return marketResult{}, fmt.Errorf("基金历史起点未覆盖请求日期")
+			}
+		} else {
+			// 目标日期之前没有净值：获取真正的成立起点，不能把第一页当全部历史。
+			if page.PageSize <= 0 || page.TotalCount < len(page.Data.List) {
+				return marketResult{}, fmt.Errorf("基金历史分页信息无效")
+			}
+			lastPageIndex := (page.TotalCount + page.PageSize - 1) / page.PageSize
+			if lastPageIndex > 1 {
+				lastPage, err := fetchFundHistoryPage(client, code, "", lastPageIndex)
+				if err != nil {
+					return marketResult{}, err
+				}
+				if len(lastPage.Data.List) == 0 {
+					return marketResult{}, fmt.Errorf("基金最早历史净值不可用")
+				}
+				oldest = lastPage.Data.List[len(lastPage.Data.List)-1]
+			}
+		}
+	} else {
+		for _, row := range page.Data.List {
+			date, err := time.Parse("2006-01-02", row.Date)
+			if err != nil {
+				return marketResult{}, err
+			}
+			if !date.After(target) {
+				oldest = row
+				break
+			}
 		}
 	}
-	start, _ := strconv.ParseFloat(firstNonEmpty(oldest.TotalNAV, oldest.NAV), 64)
-	end, _ := strconv.ParseFloat(firstNonEmpty(latestRow.TotalNAV, latestRow.NAV), 64)
-	if start <= 0 || end <= 0 {
+	firstDate, err := time.Parse("2006-01-02", oldest.Date)
+	if err != nil || !firstDate.Before(latestDate) {
+		return marketResult{}, fmt.Errorf("基金历史净值日期无效")
+	}
+	start, startErr := strconv.ParseFloat(firstNonEmpty(oldest.TotalNAV, oldest.NAV), 64)
+	end, endErr := strconv.ParseFloat(firstNonEmpty(latestRow.TotalNAV, latestRow.NAV), 64)
+	if startErr != nil || endErr != nil || start <= 0 || end <= 0 || math.IsNaN(start) || math.IsNaN(end) || math.IsInf(start, 0) || math.IsInf(end, 0) {
 		return marketResult{}, fmt.Errorf("东方财富基金净值无效")
 	}
-	firstDate, _ := time.Parse("2006-01-02", oldest.Date)
-	last := marketPoint{price: end, at: latestDate}
-	first := marketPoint{price: start, at: firstDate}
-	return marketResult{Code: strings.ToUpper(code), AnnualRate: annualized(first, last), RequestedDays: days, ActualDays: int(latestDate.Sub(firstDate).Hours() / 24), HistoryLimited: limited, StartDate: oldest.Date, EndDate: latestRow.Date, CalculationDate: time.Now().In(shanghai).Format("2006-01-02"), CurrentPrice: current, PriceCurrency: "CNY", PriceDate: priceDate, Source: "东方财富历史净值"}, nil
+	first, last := marketPoint{price: start, at: firstDate}, marketPoint{price: end, at: latestDate}
+	return marketResult{Code: strings.ToUpper(code), AnnualRate: annualized(first, last), RequestedDays: days, ActualDays: int(latestDate.Sub(firstDate).Hours() / 24), HistoryLimited: firstDate.After(target), StartDate: oldest.Date, EndDate: latestRow.Date, CalculationDate: time.Now().In(shanghai).Format("2006-01-02"), CurrentPrice: current, PriceCurrency: "CNY", PriceDate: priceDate, Source: "东方财富历史净值"}, nil
 }
 
 // firstNonEmpty 返回参数列表中第一个非空字符串，全部为空时返回空字符串。

@@ -120,21 +120,19 @@ function calculateForecast(prepared: ReturnType<typeof preparePortfolio> & objec
   const investmentForecast = investments.reduce(/* 合计各资产初始市值与未来定投的预测价值。 */ (sum, investment) => {
     const initial = investment.initial * Math.pow(1 + investment.rate, horizon);
     if (!investment.dates.length) return sum + initial;
-    const invested = investment.dates.reduce(/* 按每笔定投距预测终点的时间累计其复利价值。 */ (total, date) => {
+    const invested = investment.dates.reduce(/* 累计预测终点前各笔定投的本金。 */ (total, date) => {
       if (date > end) return total;
-      const yearsRemaining = Math.max(0, (end.getTime() - date.getTime()) / (365.25 * 86400000));
-      return total + investment.contribution * Math.pow(1 + investment.rate, yearsRemaining);
+      return total + investment.contribution;
     }, 0);
     return sum + initial + invested;
   }, 0);
   let savingsContribution = 0;
   let proceedsForecast = 0;
-  const growth = Math.max(0, 1 + prepared.weightedRate / 100);
-  // add 将预测区间内的到账金额计入储蓄，并从到账日期起计算复利。
+  // add 将预测区间内的到账金额计入本金，未来新增资金不计算收益。
   const add = (date: Date, amount: number) => {
     if (date <= prepared.asOf || date > end) return;
     savingsContribution += amount;
-    proceedsForecast += amount * Math.pow(growth, (end.getTime() - date.getTime()) / (365.25 * 86400000));
+    proceedsForecast += amount;
   };
   // Monthly savings arrive at calendar month end, matching retirement planning.
   for (let date = new Date(Date.UTC(prepared.asOf.getUTCFullYear(), prepared.asOf.getUTCMonth() + 1, 0)); date <= end;) {
