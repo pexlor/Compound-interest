@@ -80,3 +80,16 @@ func TestDailyAssetSnapshotsArePrivateAndDoNotInventHistory(t *testing.T) {
 		t.Fatal("invented history")
 	}
 }
+
+func TestMarketWakeAlignsToScheduledBoundary(t *testing.T) {
+	now := time.Date(2026, 10, 5, 9, 29, 53, 0, shanghai)
+	want := time.Date(2026, 10, 5, 9, 30, 0, 0, shanghai)
+	if got := nextMarketWake(now); !got.Equal(want) {
+		t.Fatalf("wake %v want %v", got, want)
+	}
+	now = time.Date(2026, 10, 5, 16, 59, 53, 0, shanghai)
+	want = time.Date(2026, 10, 5, 17, 0, 0, 0, shanghai)
+	if got := nextMarketWake(now); !got.Equal(want) {
+		t.Fatalf("wake %v want %v", got, want)
+	}
+}

@@ -86,18 +86,21 @@ func (a *app) runMarketJobs(ctx context.Context) {
 	}
 	a.warmMissingMarketCache(ctx)
 	// Minute checks also retry a partially failed slot after its cooldown.
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
 	for {
+		// Align the deadline to the actual Shanghai slot instead of inheriting
+		// the process startup's second offset from a periodic ticker.
+		timer := time.NewTimer(time.Until(nextMarketWake(time.Now())))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case now = <-ticker.C:
-			if err := a.runMarketSlots(ctx, now, a.refreshMarketBatch); err != nil {
+		case <-timer.C:
+			if err := a.runMarketSlots(ctx, time.Now(), a.refreshMarketBatch); err != nil {
 				log.Printf("[market-cache] scheduled: %v", err)
 			}
 		}
 	}
+
 }
 func (a *app) refreshMarketBatch(ctx context.Context) (int, int, error) {
 	rows, err := a.db.QueryContext(ctx, `SELECT DISTINCT category,code FROM assets WHERE archived_at IS NULL AND code IS NOT NULL AND category IN ('stock','fund','money') ORDER BY category,code`)
@@ -244,4 +247,13 @@ func (a *app) warmMissingMarketCache(ctx context.Context) {
 		}
 		_, _ = c.get(i.category, i.code, 1095, false)
 	}
+}
+
+func nextMarketWake(now time.Time) time.Time {
+	next := nextMarketRun(now)
+	retry := now.Add(time.Minute)
+	if retry.Before(next) {
+		return retry
+	}
+	return next
 }
