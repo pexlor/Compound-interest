@@ -79,8 +79,13 @@ func MonthlyReturns(rows []PriceObservation, asOf time.Time) (map[string]float64
 // meanReturns 返回月对数收益均值，空样本为零且由调用者检查覆盖。
 func meanReturns(values map[string]float64) float64 {
 	sum := 0.0
-	for _, v := range values {
-		sum += v
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		sum += values[key]
 	}
 	if len(values) == 0 {
 		return 0
@@ -92,7 +97,13 @@ func meanReturns(values map[string]float64) float64 {
 func EstimateDrift(own, benchmark map[string]float64) (float64, int) {
 	excess := 0.0
 	count := 0
-	for key, v := range own {
+	keys := make([]string, 0, len(own))
+	for key := range own {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		v := own[key]
 		if b, ok := benchmark[key]; ok {
 			excess += v - b
 			count++
