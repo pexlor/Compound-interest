@@ -11,7 +11,7 @@ test('forecast request keeps inflation, restricted assets and explicit benchmark
  assert.deepEqual(JSON.parse(url.searchParams.get('benchmarks')),{'12':'cn_bond'});
 });
 test('invalid saved scenario falls back to safe assumptions',()=>{
- assert.deepEqual(readForecastScenario('{bad'),{inflation:2,includeRestricted:false,benchmarks:{}});
+ assert.deepEqual(readForecastScenario('{bad'),{inflation:2,includeRestricted:true,benchmarks:{}});
  assert.equal(readForecastScenario('{"inflation":-1}').inflation,2);
  assert.deepEqual(readForecastScenario('{"inflation":3,"includeRestricted":true,"benchmarks":{"2":"fake","3":"cn_bond"}}').benchmarks,{'3':'cn_bond'});
 });
@@ -37,4 +37,10 @@ test('snapshot FX update reconciles changed rates without a stable request loop'
  const {sameForecastRates}=await import('../src/forecast.ts');
  assert.equal(sameForecastRates({CNY:1,USD:7},{USD:7,CNY:1}),true);
  assert.equal(sameForecastRates({CNY:1,USD:7},{USD:7.2,CNY:1}),false);
+});
+
+test('old saved exclusions cannot remove recorded assets from retirement',()=>{
+ assert.equal(readForecastScenario('{"includeRestricted":false}').includeRestricted,true);
+ const url=new URL(forecastURL(1,{inflation:2,includeRestricted:false,benchmarks:{}}),'http://localhost');
+ assert.equal(url.searchParams.get('includeRestricted'),'true');
 });

@@ -36,15 +36,17 @@ type ForecastInput struct {
 type ForecastOptions struct {
 	Years             int              `json:"years"`
 	Inflation         float64          `json:"inflation"`
-	IncludeRestricted bool             `json:"includeRestricted"`
+	IncludeRestricted bool             `json:"includeRestricted"` // 兼容旧接口字段；全部资产始终纳入退休目标。
 	Benchmarks        map[int64]string `json:"benchmarks"`
 	Paths             int              `json:"-"`
 }
 
-// DefaultForecastOptions 返回十年、2%通胀、排除公积金的默认情景。
-func DefaultForecastOptions() ForecastOptions { return ForecastOptions{Years: 10, Inflation: 2} }
+// DefaultForecastOptions 返回十年、2%通胀、纳入全部资产的默认情景。
+func DefaultForecastOptions() ForecastOptions {
+	return ForecastOptions{Years: 10, Inflation: 2, IncludeRestricted: true}
+}
 
-// ForecastPoint 是年度资产分位数、实际购买力、流动资产和期末达标概率。
+// ForecastPoint 是年度资产分位数、实际购买力、全部目标资产和期末达标概率。
 type ForecastPoint struct {
 	Year          int     `json:"year"`
 	Date          string  `json:"date"`
@@ -103,11 +105,6 @@ type forecastModel struct {
 	FX       map[string][]float64
 	Assets   []ForecastAsset
 	Warnings []string
-}
-
-// liquidHolding 判断资产是否可计入退休积累目标，固定资产始终排除。
-func liquidHolding(a ForecastHolding, restricted bool) bool {
-	return a.Category != "fixed" && (a.Category != "housing" || restricted)
 }
 
 // prepareForecastModel 用稳健中心和共同日期构造联合抽样矩阵，拒绝不足的基准和外汇历史。
@@ -341,6 +338,7 @@ func percentileMinor(values []float64, q float64) int64 {
 
 // SimulateForecast 执行固定种子的5000条三月联合抽样路径，分别累积资产和未来现金本金。
 func SimulateForecast(in ForecastInput, o ForecastOptions) (ForecastResult, error) {
+	o.IncludeRestricted = true
 	out := ForecastResult{State: "ready", Model: "joint-block-v1", AsOf: in.AsOf.Format("2006-01-02"), Options: o, Warnings: []string{}, Missing: []string{}, ValuationBasis: "stored_assets"}
 	if o.Years < 1 || o.Years > 30 || !finiteRange(o.Inflation, 0, 20) || in.MonthlySavings < 0 || in.Target < 0 {
 		return out, fmt.Errorf("预测年限、通胀或本金无效")
@@ -368,9 +366,7 @@ func SimulateForecast(in ForecastInput, o ForecastOptions) (ForecastResult, erro
 	for _, a := range in.Assets {
 		v := float64(a.Amount) * in.Rates[a.Currency]
 		total += v
-		if liquidHolding(a, o.IncludeRestricted) {
-			liquidTotal += v
-		}
+		liquidTotal += v
 	}
 
 	if math.IsNaN(total) || math.IsInf(total, 0) || total > 9e15 || float64(in.Target)*math.Pow(1+o.Inflation/100, float64(o.Years)+.01) > 9e15 {
@@ -438,9 +434,7 @@ func SimulateForecast(in ForecastInput, o ForecastOptions) (ForecastResult, erro
 			for i, a := range in.Assets {
 				amount := balances[i] * fx[a.Currency]
 				v += amount
-				if liquidHolding(a, o.IncludeRestricted) {
-					lv += amount
-				}
+				lv += amount
 			}
 			if math.IsNaN(v) || math.IsInf(v, 0) || v > 9e15 || v < 0 {
 				return out, fmt.Errorf("模拟金额超出范围，请缩短预测期限")

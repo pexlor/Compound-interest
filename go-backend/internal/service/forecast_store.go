@@ -247,6 +247,7 @@ func LoadForecastInput(q Queryer, userID int64, o ForecastOptions, asOf time.Tim
 
 // ForecastFromSnapshot 计算已装配快照，缺数据时返回明确不可用状态而非零收益。
 func ForecastFromSnapshot(in ForecastInput, summary Retirement, warnings []string, o ForecastOptions) ForecastResponse {
+	o.IncludeRestricted = true
 	result, err := SimulateForecast(in, o)
 	if !summary.Complete {
 		err = fmt.Errorf("目标或资产缺少当前汇率：%s", strings.Join(summary.MissingCurrencies, "、"))
@@ -261,9 +262,7 @@ func ForecastFromSnapshot(in ForecastInput, summary Retirement, warnings []strin
 	summary.ForecastState = result.State
 	summary.LiquidCNY = 0
 	for _, a := range in.Assets {
-		if liquidHolding(a, o.IncludeRestricted) {
-			summary.LiquidCNY += int64(math.Round(float64(a.Amount) * in.Rates[a.Currency]))
-		}
+		summary.LiquidCNY += int64(math.Round(float64(a.Amount) * in.Rates[a.Currency]))
 	}
 	if summary.TargetCNY > 0 {
 		summary.Progress = math.Min(100, float64(summary.LiquidCNY)/float64(summary.TargetCNY)*100)

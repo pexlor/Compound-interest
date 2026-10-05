@@ -51,6 +51,7 @@ func forecastOptions(r *http.Request) (service.ForecastOptions, error) {
 			}
 		}
 	}
+	o.IncludeRestricted = true // 旧参数只保留格式校验，不再排除任何资产分类。
 	return o, nil
 }
 

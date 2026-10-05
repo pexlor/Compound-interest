@@ -20,7 +20,7 @@ func TestForecastCompoundsAssetsSeparately(t *testing.T) {
 	}
 }
 
-// TestForecastDatedPrincipalInflationAndLiquidity 验证现金不计息、日期边界、通胀及固定资产排除。
+// TestForecastDatedPrincipalInflationAndLiquidity 验证现金不计息、日期边界、通胀及固定资产纳入退休目标。
 func TestForecastDatedPrincipalInflationAndLiquidity(t *testing.T) {
 	in := ForecastInput{AsOf: day("2026-01-01"), Rates: map[string]float64{"CNY": 1}, Target: 1200000, Assets: []ForecastHolding{{ID: 1, Category: "fixed", Currency: "CNY", Amount: 1000000, AnnualRate: 50}}, MonthlySavings: 10000, Events: []Cashflow{{Date: "2026-01-01", Amount: 999000, Currency: "CNY"}, {Date: "2026-02-15", Amount: 100000, Currency: "CNY"}, {Date: "2027-01-02", Amount: 999000, Currency: "CNY"}}}
 	out, err := SimulateForecast(in, ForecastOptions{Years: 1, Inflation: 10, Paths: 10})
@@ -28,7 +28,7 @@ func TestForecastDatedPrincipalInflationAndLiquidity(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := out.Series[1]
-	if p.P50 != 1220000 || p.LiquidP50 != 220000 || p.Contributions != 220000 || p.Probability != 0 || out.RetirementDate != "" {
+	if p.P50 != 1220000 || p.LiquidP50 != 1220000 || p.Contributions != 220000 || p.Probability != 0 || out.RetirementDate != "" {
 		t.Fatalf("%+v", out)
 	}
 	if out.ThisMonth.Contributions != 10000 || out.ThisMonth.InvestmentGain != 0 {
@@ -144,5 +144,22 @@ func TestForecastRequiresContinuousCommonHistory(t *testing.T) {
 	in := ForecastInput{AsOf: day("2025-02-01"), Rates: map[string]float64{"USD": 7, "CNY": 1}, FX: map[string][]PriceObservation{"USD": sparse}, Assets: []ForecastHolding{{ID: 1, Category: "deposit", Currency: "USD", Amount: 100}}}
 	if _, err := SimulateForecast(in, ForecastOptions{Years: 1, Paths: 1}); err == nil {
 		t.Fatal("disconnected sample accepted")
+	}
+}
+
+// TestForecastRetirementIncludesEveryAsset 验证旧排除参数也不能遗漏公积金、固定资产和普通资产，达标计算与总额一致。
+func TestForecastRetirementIncludesEveryAsset(t *testing.T) {
+	in := ForecastInput{AsOf: day("2026-01-01"), Rates: map[string]float64{"CNY": 1}, Target: 600000, Assets: []ForecastHolding{{ID: 1, Category: "deposit", Currency: "CNY", Amount: 100000}, {ID: 2, Category: "housing", Currency: "CNY", Amount: 200000}, {ID: 3, Category: "fixed", Currency: "CNY", Amount: 300000, AnnualRate: 50}}}
+	out, err := SimulateForecast(in, ForecastOptions{Years: 1, Paths: 5, IncludeRestricted: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range out.Series {
+		if p.P50 != 600000 || p.LiquidP50 != p.P50 || p.Probability != 1 {
+			t.Fatalf("excluded asset: %+v", p)
+		}
+	}
+	if out.RetirementDate != "2026-01-01" {
+		t.Fatalf("date %s", out.RetirementDate)
 	}
 }

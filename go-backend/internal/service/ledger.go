@@ -377,9 +377,7 @@ func RetirementFor(q Queryer, userID int64) (Retirement, error) {
 			return out, invalid("资产合计超出范围")
 		}
 		out.CurrentCNY += v
-		if liquidHolding(ForecastHolding{Category: a.Category}, false) {
-			out.LiquidCNY += v
-		}
+		out.LiquidCNY += v
 	}
 	if out.TargetCNY > 0 && out.Complete {
 		out.Progress = math.Min(100, float64(out.LiquidCNY)/float64(out.TargetCNY)*100)

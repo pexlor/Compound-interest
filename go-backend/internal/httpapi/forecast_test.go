@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"fulibu-go/internal/service"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -123,5 +124,28 @@ func TestForecastAndRetirementShareLimit(t *testing.T) {
 	status, _ := requestAPI(t, h, c, "", "GET", "/api/retirement/items", "", "")
 	if status != 200 {
 		t.Fatalf("items %d", status)
+	}
+}
+
+// TestRetirementAPIIncludesAllBalances 验证预测及退休读取、写入摘要均纳入所有分类，兼容旧排除参数。
+func TestRetirementAPIIncludesAllBalances(t *testing.T) {
+	db, h, c := apiFixture(t)
+	db.Exec(`INSERT INTO assets(user_id,name,category,amount,currency) VALUES(1,'cash','deposit',100000,'CNY'),(1,'housing','housing',200000,'CNY'),(1,'fixed','fixed',300000,'CNY')`)
+	db.Exec(`INSERT INTO retirement_goal_items(user_id,name,category,amount,currency) VALUES(1,'goal','deposit',600000,'CNY')`)
+	for _, path := range []string{"/api/forecast?years=1&includeRestricted=false", "/api/retirement?years=1&includeRestricted=false"} {
+		status, v := requestAPI(t, h, c, "", "GET", path, "", "")
+		if status != 200 {
+			t.Fatalf("%d %v", status, v)
+		}
+		if nested, ok := v["retirement"]; ok {
+			v = nested.(map[string]any)
+		}
+		if v["liquid_cny"] != float64(600000) || v["progress"] != float64(100) || v["projected_years"] != float64(0) {
+			t.Fatalf("excluded: %v", v)
+		}
+	}
+	summary, err := service.RetirementFor(db, 1)
+	if err != nil || summary.LiquidCNY != 600000 {
+		t.Fatalf("summary %+v %v", summary, err)
 	}
 }
