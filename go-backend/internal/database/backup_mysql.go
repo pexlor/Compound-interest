@@ -114,6 +114,24 @@ func InitializeBackupTarget(ctx context.Context, target *sql.DB, sourceID string
 	if source != sourceID {
 		return ErrBackupSourceConflict
 	}
+	if initialized == 1 {
+		// Validate the owned legacy schema before creating only the explicitly
+		// known new cache tables. Never repair an incompatible existing table.
+		for _, table := range backupTables {
+			if !isMarketCacheTable(table.name) {
+				if err := validateMySQLBackupTable(ctx, target, table); err != nil {
+					return err
+				}
+			}
+		}
+		for _, table := range backupTables {
+			if isMarketCacheTable(table.name) && !tables[table.name] {
+				if _, err := target.ExecContext(ctx, mysqlBackupDDL(table)); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	if initialized == 0 {
 		for _, table := range backupTables {
 			if _, err := target.ExecContext(ctx, mysqlBackupDDL(table)); err != nil {
@@ -166,7 +184,7 @@ func mysqlBackupNullable(table backupTable, column string) bool {
 
 func mysqlBackupType(column string) string {
 	switch column {
-	case "id", "user_id", "password_iterations", "expires_at", "amount", "investment_amount", "version", "monthly_salary", "monthly_savings", "annual_bonus", "status", "total_cny", "lookback_days", "requested_days", "actual_days", "history_limited", "asset_id", "inception_known", "input_version", "success_count", "failure_count":
+	case "id", "user_id", "password_iterations", "expires_at", "amount", "investment_amount", "version", "monthly_salary", "monthly_savings", "annual_bonus", "status", "total_cny", "lookback_days", "requested_days", "actual_days", "history_limited", "asset_id", "inception_known", "input_version", "observation_count", "success_count", "failure_count":
 		return "BIGINT"
 	case "quantity", "annual_rate", "cny_rate", "period_return", "price", "return_price", "income":
 		return "DOUBLE"

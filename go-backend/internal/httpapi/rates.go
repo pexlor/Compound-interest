@@ -77,6 +77,9 @@ func (a *app) refreshRates() (map[string]float64, string, error) {
 		if _, err := tx.Exec(`INSERT INTO exchange_rates(currency,cny_rate,rate_date,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(currency) DO UPDATE SET cny_rate=excluded.cny_rate,rate_date=excluded.rate_date,updated_at=CURRENT_TIMESTAMP`, currency, rate, date); err != nil {
 			return nil, "", err
 		}
+		if _, err := tx.Exec(`INSERT INTO exchange_rate_history(currency,cny_rate,rate_date,source,fetched_at) VALUES(?,?,?,?,?) ON CONFLICT(currency,rate_date) DO UPDATE SET cny_rate=excluded.cny_rate,source=excluded.source,fetched_at=excluded.fetched_at`, currency, rate, date, "Frankfurter", cacheTime()); err != nil {
+			return nil, "", err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, "", err

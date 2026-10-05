@@ -7,6 +7,7 @@ import (
 	"fulibu-go/internal/service"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -138,7 +139,29 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, e.Error())
 		return
 	}
-	out(w, 200, map[string]any{"user": u, "assets": assets, "history": history, "income": income, "rates": rates, "date": date, "stale": date == "", "snapshotRecorded": false})
+	marketResults := []marketResult{}
+	cache := marketCacheFor(a.db)
+	seen := map[string]bool{}
+	for _, asset := range assets {
+		if asset.Code == nil {
+			continue
+		}
+		cat, code, err := marketIdentity(asset.Category, *asset.Code)
+		if err != nil {
+			continue
+		}
+		key := asset.Category + ":" + *asset.Code
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if result, ok := cache.read(cat, code, 1095); ok {
+			result.Category = asset.Category
+			result.Code = strings.ToUpper(*asset.Code)
+			marketResults = append(marketResults, result)
+		}
+	}
+	out(w, 200, map[string]any{"marketResults": marketResults, "user": u, "assets": assets, "history": history, "income": income, "rates": rates, "date": date, "stale": date == "", "snapshotRecorded": false})
 }
 
 // snapshotCurrentAssets refreshes quote-based holdings first, then records the

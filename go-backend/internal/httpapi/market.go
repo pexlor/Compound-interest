@@ -31,6 +31,10 @@ type marketResult struct {
 	PriceDate       string  `json:"priceDate,omitempty"`
 	Source          string  `json:"source"`
 	Stale           bool    `json:"stale,omitempty"`
+	AnnualReady     bool    `json:"annualReady"`
+	Pending         bool    `json:"pending,omitempty"`
+	FetchedAt       string  `json:"fetchedAt,omitempty"`
+	Error           string  `json:"error,omitempty"`
 }
 
 // tencentKlineResponse 对应腾讯日线接口的状态、消息和各证券原始行情数据。
@@ -224,7 +228,17 @@ func (a *app) refreshMarketAssetValues(userID int64) error {
 	client := &http.Client{Timeout: 12 * time.Second}
 	fetch := a.quote
 	if fetch == nil {
-		fetch = fetchLiveQuote
+		fetch = func(client *http.Client, category, code string) (float64, string, string, error) {
+			cat, key, e := marketIdentity(category, code)
+			if e == nil {
+				var price float64
+				var currency, date string
+				if e = a.db.QueryRow(`SELECT price,currency,price_date FROM market_quotes WHERE category=? AND code=?`, cat, key).Scan(&price, &currency, &date); e == nil && price > 0 {
+					return price, currency, date, nil
+				}
+			}
+			return fetchLiveQuote(client, category, code)
+		}
 	}
 	for _, asset := range assets {
 		if (asset.Category != "stock" && asset.Category != "fund") || asset.Code == nil || asset.Quantity == nil || *asset.Quantity <= 0 {
@@ -238,7 +252,7 @@ func (a *app) refreshMarketAssetValues(userID int64) error {
 		if conversionErr != nil || !service.Currency(quoteCurrency) {
 			continue
 		}
-		if _, err := a.db.Exec("UPDATE assets SET amount=?,currency=? WHERE id=? AND user_id=? AND archived_at IS NULL AND version=?", amount, quoteCurrency, asset.ID, userID, asset.Version); err != nil {
+		if _, err := a.db.Exec("UPDATE assets SET amount=?,currency=? WHERE id=? AND user_id=? AND archived_at IS NULL AND version=? AND (amount<>? OR currency<>?)", amount, quoteCurrency, asset.ID, userID, asset.Version, amount, quoteCurrency); err != nil {
 			return err
 		}
 	}
@@ -622,9 +636,13 @@ func (a *app) market(w http.ResponseWriter, r *http.Request) {
 		}
 		days = value
 	}
+	if days < 1 || days > 3650 {
+		fail(w, 400, "不支持的历史区间")
+		return
+	}
 	code, category := strings.TrimSpace(r.URL.Query().Get("code")), strings.TrimSpace(r.URL.Query().Get("category"))
 	if code != "" {
-		result, err := fetchMarket(category, code, days)
+		result, err := marketCacheFor(a.db).get(category, code, days, r.URL.Query().Get("refresh") == "1")
 		if err != nil {
 			if cached, ok := a.cachedMarketPrice(u.ID, category, code, days); ok {
 				out(w, 200, cached)
@@ -632,6 +650,17 @@ func (a *app) market(w http.ResponseWriter, r *http.Request) {
 			}
 			fail(w, 502, "行情读取失败: "+err.Error())
 			return
+		}
+		// New quantity-based assets need a quote immediately even while the
+		// longer historical backfill runs asynchronously.
+		if result.CurrentPrice <= 0 && category != "money" {
+			client := contextClient(r.Context(), &http.Client{Timeout: 12 * time.Second})
+			price, currency, date, e := fetchLiveQuote(client, category, strings.ToUpper(code))
+			if e == nil {
+				result.CurrentPrice = price
+				result.PriceCurrency = currency
+				result.PriceDate = date
+			}
 		}
 		result.Category = category
 		out(w, 200, result)
@@ -644,11 +673,17 @@ func (a *app) market(w http.ResponseWriter, r *http.Request) {
 	}
 	results := []marketResult{}
 	errors := []map[string]string{}
+	seen := map[string]bool{}
 	for _, asset := range assets {
-		if asset.Code == nil || (asset.Category != "stock" && asset.Category != "fund") {
+		if asset.Code == nil || (asset.Category != "stock" && asset.Category != "fund" && asset.Category != "money") {
 			continue
 		}
-		result, err := fetchMarket(asset.Category, *asset.Code, days)
+		key := asset.Category + ":" + strings.ToUpper(*asset.Code)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result, err := marketCacheFor(a.db).get(asset.Category, *asset.Code, days, r.URL.Query().Get("refresh") == "1")
 		if err != nil {
 			if cached, ok := a.cachedMarketPrice(u.ID, asset.Category, *asset.Code, days); ok {
 				results = append(results, cached)

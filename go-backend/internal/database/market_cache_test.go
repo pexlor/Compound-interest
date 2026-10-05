@@ -1,6 +1,9 @@
 package database
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestMarketCacheMigrationAndReopen(t *testing.T) {
 	dir := t.TempDir()
@@ -29,5 +32,44 @@ func TestMarketCacheMigrationAndReopen(t *testing.T) {
 	var p float64
 	if err = db.QueryRow(`SELECT price FROM market_daily_prices`).Scan(&p); err != nil || p != 2 {
 		t.Fatalf("cache lost: %v %v", p, err)
+	}
+}
+
+func TestExistingBackupAddsCaptureForMarketCacheTables(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	source, err := EnableBackup(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the pre-cache application's existing backup marker and triggers.
+	for _, op := range []string{"insert", "update", "delete"} {
+		if _, err = db.Exec("DROP TRIGGER backup_capture_market_quotes_" + op); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Exec(`DELETE FROM backup_outbox`)
+	if _, err = db.Exec(`INSERT INTO market_quotes(category,code,price,currency,price_date,source,fetched_at) VALUES('stock','AAPL',100,'USD','2026-10-04','test','now')`); err != nil {
+		t.Fatal(err)
+	}
+	again, err := EnableBackup(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != source {
+		t.Fatal("source identity changed")
+	}
+	var n int
+	db.QueryRow(`SELECT COUNT(*) FROM backup_outbox WHERE table_name='market_quotes'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("existing cache row not seeded: %d", n)
+	}
+	db.Exec(`UPDATE market_quotes SET price=200`)
+	db.QueryRow(`SELECT COUNT(*) FROM backup_outbox WHERE table_name='market_quotes'`).Scan(&n)
+	if n != 2 {
+		t.Fatal("new cache updates not captured")
 	}
 }

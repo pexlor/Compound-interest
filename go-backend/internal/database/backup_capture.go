@@ -54,6 +54,27 @@ func initializeCapture(ctx context.Context, db *sql.DB, reset bool) (string, err
 		return "", err
 	}
 	if err == nil && !reset {
+		// An existing source keeps its identity and checkpoint while additive
+		// application tables acquire capture and an initial row seed.
+		for _, table := range backupTables {
+			if !isMarketCacheTable(table.name) {
+				continue
+			}
+			var triggers int
+			if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (?,?,?)`, "backup_capture_"+table.name+"_insert", "backup_capture_"+table.name+"_update", "backup_capture_"+table.name+"_delete").Scan(&triggers); err != nil {
+				return "", err
+			}
+			if triggers == 3 {
+				continue
+			}
+			if err = installCapture(ctx, tx, table); err != nil {
+				return "", err
+			}
+			query := fmt.Sprintf(`INSERT INTO backup_outbox(table_name,operation,row_key,row_data) SELECT '%s','upsert',%s,%s FROM %s ORDER BY %s`, table.name, keyJSON(table, ""), rowJSON(table, ""), quoteIdent(table.name), joinQuoted(table.keys))
+			if _, err = tx.ExecContext(ctx, query); err != nil {
+				return "", err
+			}
+		}
 		return source, tx.Commit()
 	}
 	var entropy [16]byte
