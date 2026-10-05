@@ -50,6 +50,12 @@ func BacktestForecast(in ForecastInput, o ForecastOptions) (BacktestReport, erro
 	if o.Years != 1 && o.Years != 3 && o.Years != 5 {
 		return report, fmt.Errorf("回测期限仅支持1、3、5年")
 	}
+	for _, a := range in.Assets {
+		if a.Category == "money" {
+			report.Note += " 含货币基金：缺少经核验的历史期间收益，暂不生成组合误差，避免用当前利率伪造实际终值。"
+			return report, nil
+		}
+	}
 	cutoff := time.Date(in.AsOf.Year(), in.AsOf.Month(), 1, 0, 0, 0, 0, time.UTC)
 	first := cutoff.AddDate(-10, 0, 0)
 	for at := first.AddDate(5, 0, 0); !at.AddDate(o.Years, 0, 0).After(cutoff); at = at.AddDate(1, 0, 0) {
@@ -108,7 +114,16 @@ func BacktestForecast(in ForecastInput, o ForecastOptions) (BacktestReport, erro
 					break
 				}
 				ratio = end / start
-				legacyRatio = math.Pow(start/old, float64(o.Years)/3)
+				legacyBase := start / old
+				if a.Currency == "USD" {
+					oldFX, found := observationAt(in.FX[a.Currency], at.AddDate(-3, 0, 0))
+					if !found {
+						ok = false
+						break
+					}
+					legacyBase *= rate / oldFX
+				}
+				legacyRatio = math.Pow(legacyBase, float64(o.Years)/3)
 			} else if a.Category != "fixed" {
 				ratio = math.Pow(1+a.AnnualRate/100, float64(o.Years))
 				legacyRatio = ratio

@@ -156,10 +156,18 @@ func fetchFundNAVSeries(ctx context.Context, client *http.Client, code string, f
 	return series, nil
 }
 
-// fetchUSSeries 取得美股原始和复权收盘价、可确认的历史起点及最新可用报价。
+// fetchUSSeries 取得美股或港股本币原始及含分红复权价，外汇转换由调用者单独处理。
 func fetchUSSeries(ctx context.Context, client *http.Client, code string, from time.Time) (marketSeries, error) {
 	ticker := strings.TrimPrefix(strings.ToUpper(code), "US")
-	endpoint := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s?period1=%d&period2=%d&interval=1d&events=div,splits&includeAdjustedClose=true", url.PathEscape(strings.ReplaceAll(ticker, ".", "-")), from.Unix(), time.Now().Unix()+86400)
+	currency := "USD"
+	if symbol, c, e := tencentSymbol("stock", code); e == nil && c == "HKD" {
+		n, _ := strconv.Atoi(strings.TrimPrefix(symbol, "hk"))
+		ticker = fmt.Sprintf("%04d.HK", n)
+		currency = "HKD"
+	} else {
+		ticker = strings.ReplaceAll(ticker, ".", "-")
+	}
+	endpoint := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s?period1=%d&period2=%d&interval=1d&events=div,splits&includeAdjustedClose=true", url.PathEscape(ticker), from.Unix(), time.Now().Unix()+86400)
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return marketSeries{}, err
@@ -202,7 +210,7 @@ func fetchUSSeries(ctx context.Context, client *http.Client, code string, from t
 	if len(r.Indicators.AdjClose) == 0 {
 		return marketSeries{}, fmt.Errorf("美股复权历史不可用")
 	}
-	series := marketSeries{Currency: "USD", Source: "Yahoo Finance 复权收盘价（人民币汇率调整）", InceptionKnown: r.Meta.FirstTradeDate > 0 && !time.Unix(r.Meta.FirstTradeDate, 0).Before(from)}
+	series := marketSeries{Currency: currency, Source: "Yahoo Finance 本币复权收盘价", InceptionKnown: r.Meta.FirstTradeDate > 0 && !time.Unix(r.Meta.FirstTradeDate, 0).Before(from)}
 	for i, stamp := range r.Timestamp {
 		adj := r.Indicators.AdjClose[0].Values
 		if i >= len(adj) || adj[i] == nil || !finitePositive(*adj[i]) {
@@ -335,6 +343,9 @@ func fetchTencentSeries(ctx context.Context, client *http.Client, category, code
 // fetchMarketSeries 按证券市场和基金类别选择可复用的每日行情采集器。
 func fetchMarketSeries(ctx context.Context, client *http.Client, category, code string, from time.Time) (marketSeries, error) {
 	if isUSSecurity(code) {
+		return fetchUSSeries(ctx, client, code, from)
+	}
+	if _, currency, e := tencentSymbol(category, code); e == nil && currency == "HKD" {
 		return fetchUSSeries(ctx, client, code, from)
 	}
 	if (category == "fund" || category == "money") && !isExchangeFund(code) {

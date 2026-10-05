@@ -16,7 +16,10 @@ type ForecastSecurity struct{ Category, Code string }
 // ForecastResponse 同时返回预测范围和同一情景下的退休进度。
 type ForecastResponse struct {
 	ForecastResult
-	Retirement Retirement `json:"retirement"`
+	Retirement   Retirement         `json:"retirement"`
+	Rates        map[string]float64 `json:"rates"`
+	RateDate     string             `json:"rateDate"`
+	StoredAssets []Asset            `json:"storedAssets"`
 }
 
 // ForecastBenchmarks 返回风险类别和代表性宽基/国债ETF的对应关系。
@@ -119,6 +122,7 @@ func LoadForecastInput(q Queryer, userID int64, o ForecastOptions, asOf time.Tim
 	if err != nil {
 		return in, summary, nil, warnings, err
 	}
+	in.StoredAssets = assets
 	rates, err := q.Query(`SELECT currency,cny_rate,rate_date FROM exchange_rates`)
 	if err != nil {
 		return in, summary, nil, warnings, err
@@ -132,6 +136,9 @@ func LoadForecastInput(q Queryer, userID int64, o ForecastOptions, asOf time.Tim
 		}
 		if positiveFinite(r) {
 			in.Rates[c] = r
+			if d > in.RateDate {
+				in.RateDate = d
+			}
 			if d < asOf.AddDate(0, 0, -7).Format("2006-01-02") {
 				warnings = append(warnings, c+" 当前汇率超过七天未更新")
 			}
@@ -305,7 +312,7 @@ func ForecastFromSnapshot(in ForecastInput, summary Retirement, warnings []strin
 			}
 		}
 	}
-	return ForecastResponse{result, summary}
+	return ForecastResponse{ForecastResult: result, Retirement: summary, StoredAssets: in.StoredAssets, Rates: in.Rates, RateDate: in.RateDate}
 }
 
 // Forecast 在短只读事务内装配快照，释放数据库连接后运行可取消的模拟。

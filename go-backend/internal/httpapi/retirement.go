@@ -33,6 +33,13 @@ func (a *app) retirement(w http.ResponseWriter, r *http.Request) {
 			apiError(w, 400, "invalid_request", err.Error())
 			return
 		}
+		select {
+		case forecastSlots <- struct{}{}:
+			defer func() { <-forecastSlots }()
+		default:
+			apiError(w, 503, "forecast_busy", "预测正在计算，请稍后重试")
+			return
+		}
 		now := time.Now().In(shanghai)
 		at := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		response, _, _, err := a.ledger.Forecast(r.Context(), u.ID, o, at)
@@ -56,7 +63,7 @@ func (a *app) retirementItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		v, err := a.ledger.Retirement(u.ID)
+		v, err := service.RetirementFor(a.db, u.ID)
 		if err != nil {
 			writeAPIError(w, err)
 			return

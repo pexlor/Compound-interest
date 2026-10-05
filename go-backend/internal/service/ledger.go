@@ -353,6 +353,10 @@ func RetirementFor(q Queryer, userID int64) (Retirement, error) {
 			goals.Close()
 			return out, e
 		}
+		if v > 9000000000000000-out.TargetCNY {
+			goals.Close()
+			return out, invalid("退休目标合计超出范围")
+		}
 		out.TargetCNY += v
 	}
 	err = goals.Err()
@@ -368,6 +372,9 @@ func RetirementFor(q Queryer, userID int64) (Retirement, error) {
 		v, e := converted(a.Amount, a.Currency)
 		if e != nil {
 			return out, e
+		}
+		if v > 9000000000000000-out.CurrentCNY {
+			return out, invalid("资产合计超出范围")
 		}
 		out.CurrentCNY += v
 		if liquidHolding(ForecastHolding{Category: a.Category}, false) {

@@ -107,3 +107,21 @@ func serviceMonthlyFixture() []forecastFixturePoint {
 	}
 	return rows
 }
+
+// TestForecastAndRetirementShareLimit 验证所有模拟入口共享限流，而明细读取不启动模拟。
+func TestForecastAndRetirementShareLimit(t *testing.T) {
+	_, h, c := apiFixture(t)
+	forecastSlots <- struct{}{}
+	forecastSlots <- struct{}{}
+	defer func() { <-forecastSlots; <-forecastSlots }()
+	for _, path := range []string{"/api/forecast", "/api/retirement"} {
+		status, _ := requestAPI(t, h, c, "", "GET", path, "", "")
+		if status != 503 {
+			t.Fatalf("%s status %d", path, status)
+		}
+	}
+	status, _ := requestAPI(t, h, c, "", "GET", "/api/retirement/items", "", "")
+	if status != 200 {
+		t.Fatalf("items %d", status)
+	}
+}

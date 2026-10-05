@@ -145,3 +145,20 @@ func TestTencentYoungSecurityConfirmsAvailableHistoryStart(t *testing.T) {
 		t.Fatalf("young security lacks confirmed start: %+v %v", series, err)
 	}
 }
+
+// TestHKSeriesUsesAdjustedNativePrices 验证港股按雅虎正确代码获取含分红复权价，并保持港币金额口径。
+func TestHKSeriesUsesAdjustedNativePrices(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/finance/chart/2800.HK") {
+			w.WriteHeader(502)
+			return
+		}
+		fmt.Fprint(w, `{"chart":{"result":[{"meta":{"firstTradeDate":1704067200},"timestamp":[1704067200,1704153600],"indicators":{"adjclose":[{"adjclose":[9,10]}],"quote":[{"close":[19,20]}]}}]}}`)
+	}))
+	defer server.Close()
+	from, _ := time.Parse("2006-01-02", "2020-01-01")
+	s, err := fetchMarketSeries(context.Background(), &http.Client{Transport: quoteTransportForCache{server.URL}}, "stock", "02800.HK", from)
+	if err != nil || s.Currency != "HKD" || len(s.Rows) != 2 || s.Rows[0].Price != 19 || s.Rows[0].ReturnPrice != 9 {
+		t.Fatalf("%+v %v", s, err)
+	}
+}

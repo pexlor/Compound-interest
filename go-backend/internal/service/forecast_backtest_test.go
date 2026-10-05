@@ -47,3 +47,38 @@ func TestBacktestForecastNeverUsesFutureTraining(t *testing.T) {
 		t.Fatal("fixture did not alter outcome")
 	}
 }
+
+// TestBacktestLegacyUSDIncludesHistoricalFX 验证旧算法对照包含美元历史汇率收益，避免比较错基线。
+func TestBacktestLegacyUSDIncludesHistoricalFX(t *testing.T) {
+	rows := trendingFixture()
+	fx := append([]PriceObservation(nil), rows...)
+	for i := range rows {
+		rows[i].TotalPrice = 100
+		rows[i].Price = 100
+		fx[i].TotalPrice = 7 * math.Pow(1.1, float64(i)/12)
+	}
+	in := ForecastInput{AsOf: day("2023-01-01"), Rates: map[string]float64{"USD": 7, "CNY": 1}, Assets: []ForecastHolding{{ID: 1, Category: "stock", Currency: "USD", Amount: 1000000, Class: "us_equity", Key: "own"}}, History: map[string][]PriceObservation{"own": rows, "us_equity": rows}, FX: map[string][]PriceObservation{"USD": fx}}
+	report, err := BacktestForecast(in, ForecastOptions{Years: 1, Paths: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Cases) == 0 {
+		t.Fatal("no windows")
+	}
+	c := report.Cases[0]
+	if math.Abs(float64(c.Actual-c.Legacy)) > 2 {
+		t.Fatalf("legacy missed FX: %+v", c)
+	}
+}
+
+// TestBacktestMoneyDoesNotInventActualReturns 验证没有历史期间货基收益时不以今天利率伪造回测结果。
+func TestBacktestMoneyDoesNotInventActualReturns(t *testing.T) {
+	in := ForecastInput{AsOf: day("2023-01-01"), Rates: map[string]float64{"CNY": 1}, Assets: []ForecastHolding{{ID: 1, Category: "money", Currency: "CNY", Amount: 1000000, AnnualRate: 4}}}
+	out, err := BacktestForecast(in, ForecastOptions{Years: 1, Paths: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Cases) != 0 {
+		t.Fatal("current money rate used as actual")
+	}
+}

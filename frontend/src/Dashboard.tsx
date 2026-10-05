@@ -7,7 +7,10 @@ import { IncomePlanner } from "./IncomePlanner";
 import type { IncomeSettings, IncomeInput } from "./income";
 
 import { FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { calculateMonthEndGrowth, calculatePortfolio, calculatePortfolioSeries } from "./portfolio";
+import { calculatePortfolio } from "./portfolio";
+import { ForecastPanel } from "./ForecastPanel";
+import { canApplyForecast, forecastURL, readForecastScenario, sameStoredAssets, sameForecastRates } from "./forecast";
+import type { ForecastResponse, ForecastScenario } from "./forecast";
 import { exchangePairs } from "./exchange-rates";
 import { mutationHeaders } from "./mutations";
 import { mergeMarketResults, missingMarketRates, needsMarketRate, shouldApplyMarketResponse } from "./market-cache";
@@ -64,7 +67,7 @@ type HistoryEntry = {
 // RetirementItem 表示退休目标中的一项资产或支出需求。
 type RetirementItem = { id: number; version: number; name: string; category: string; amount: number; currency: Currency };
 // Retirement 对应退休计划接口的目标、进度、预测时间与明细。
-type Retirement = { target_cny: number; current_cny: number; progress: number; projected_years: number | null; projected_date?: string; missing_currencies?: string[]; annual_rate: number; items: RetirementItem[] };
+type Retirement = { target_cny: number; current_cny: number; progress: number; projected_years: number | null; projected_date?: string; missing_currencies?: string[]; annual_rate: number; complete?: boolean; liquid_cny?: number; forecast_state?: string; items: RetirementItem[] };
 
 // emptyIncome 构造带初始版本和上海日期的空收入设置。
 const emptyIncome = (): IncomeSettings => ({ version: 0, monthly_salary: 0, monthly_savings: 0, annual_bonus: 0, updated_at: null, bonus_settings: null, options: [], cashflows: [], forecast_as_of: new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" }) });
@@ -176,7 +179,16 @@ export default function Dashboard() {
   const [activeFilter, setActiveFilter] = useState<"all" | Category>("all");
   const [assetPage, setAssetPage] = useState(0);
   const [allocationMode, setAllocationMode] = useState<"category" | "asset">("category");
-  const [horizon, setHorizon] = useState(3);
+  const [horizon, setHorizon] = useState(10);
+  const [forecastData,setForecastData]=useState<ForecastResponse|null>(null);
+  const [forecastLoading,setForecastLoading]=useState(false);
+  const [forecastError,setForecastError]=useState("");
+  const [forecastRevision,setForecastRevision]=useState(0);
+  const [scenarioState,setScenarioState]=useState<{owner:number|null;value:ForecastScenario}>({owner:null,value:readForecastScenario(null)});
+  const forecastGeneration=useRef(0);
+  const activeForecastUser=useRef<number|null>(null);
+  activeForecastUser.current=user?.id??null;
+  const scenario=scenarioState.value;
   const [lookback, setLookback] = useState(3);
   const activeMarketDays = useRef(1095);
   const marketRequestGeneration = useRef(0);
@@ -249,10 +261,7 @@ export default function Dashboard() {
         setExchangeRates(dashboard.rates ?? { CNY: 1 });
         setExchangeDate(dashboard.date ?? "");
         setExchangeStale(Boolean(dashboard.stale));
-        void fetch("/api/retirement", { signal: controller.signal })
-          .then(/* 仅在接口成功时解析退休计划数据。 */ (response) => response.ok ? response.json() as Promise<Retirement> : null)
-          .then(/* 身份已切换时不再应用旧账号的退休目标。 */ (goal) => { if (goal && !controller.signal.aborted) setRetirement(goal); })
-          .catch(/* 取消或读取失败时保持空目标，不产生未处理异常。 */ () => {});
+
       })
       .catch(/* 仅处理仍有效的读取失败，取消的旧请求不改变登录态。 */ () => { if (!controller.signal.aborted) setUser(null); })
       .finally(/* 读取失败时清除登录态，让界面回到登录入口。 */ () => {
@@ -272,7 +281,7 @@ export default function Dashboard() {
       const response = await fetch("/api/retirement", { method: "POST", headers: mutationHeaders(), body: JSON.stringify({ name: form.get("name"), category: form.get("category"), currency: form.get("currency"), amount: Number(form.get("amount")) }) });
       const data = await response.json() as Retirement & /* 补充接口失败时可能返回的错误提示。 */ { error?: string };
       if (!response.ok) throw new Error(data.error || "保存退休目标失败");
-      setRetirement(data); formElement.reset(); setToast("退休目标资产已添加");
+      setRetirement(data); setForecastRevision(value=>value+1); formElement.reset(); setToast("退休目标资产已添加");
     } catch (error) { setToast(error instanceof Error ? error.message : "保存退休目标失败"); } finally { setSavingRetirement(false); }
   }
   // removeRetirementItem 删除指定的退休目标资产。
@@ -281,7 +290,7 @@ export default function Dashboard() {
       const response = await fetch("/api/retirement/items", { method: "DELETE", headers: mutationHeaders(), body: JSON.stringify({ id: item.id, version: item.version }) });
       const data = await response.json() as Retirement & /* 补充接口失败时可能返回的错误提示。 */ { error?: string };
       if (!response.ok) throw new Error(data.error || "删除失败");
-      setRetirement(data);
+      setRetirement(data); setForecastRevision(value=>value+1);
     } catch (error) { setToast(error instanceof Error ? error.message : "删除失败"); }
   }
 
@@ -321,17 +330,50 @@ export default function Dashboard() {
   // portfolio: each asset already stores its last known market value. Only a
   // genuinely missing currency conversion should block the aggregate view.
   const missingExchangeRate = displayAssets.some(/* 检查相关资产或预测现金流是否缺少有效汇率。 */ (asset) => !exchangeRates[asset.currency]);
-  const portfolioSeries = useMemo(/* 缓存当前预测年限下的逐年资产增长序列。 */ () => calculatePortfolioSeries(displayAssets, exchangeRates, horizon, new Date(`${income.forecast_as_of}T00:00:00Z`), income.monthly_savings, income.cashflows), [displayAssets, exchangeRates, horizon, income]);
-  // Avoid Array.prototype.at(): some Chromium-based browsers still in use do not support it.
-  const portfolio = portfolioSeries?.[portfolioSeries.length - 1] ?? null;
-  const currentPortfolio = useMemo(/* 缓存当前资产汇总和加权收益率。 */ () => calculatePortfolio(displayAssets, exchangeRates, 0), [displayAssets, exchangeRates]);
-  const monthlyGrowth = useMemo(/* 独立计算本月剩余增长，不随长期预测年限变化。 */ () => calculateMonthEndGrowth(displayAssets, exchangeRates, new Date(`${income.forecast_as_of}T00:00:00Z`), income.monthly_savings, income.cashflows), [displayAssets, exchangeRates, income]);
-  const missingForecastExchangeRate = missingExchangeRate || portfolioSeries === null;
-  const total = currentPortfolio?.total ?? 0;
-  const forecast = portfolio?.forecast ?? 0;
-  const expectedGain = portfolio?.expectedGain ?? 0;
-  const weightedRate = currentPortfolio?.weightedRate ?? 0;
-  const savingsContribution = portfolio?.savingsContribution ?? 0;
+  const currentPortfolio = useMemo(/* 仅汇总当前资产，未来预测统一读取后端。 */ () => calculatePortfolio(displayAssets, exchangeRates, 0), [displayAssets, exchangeRates]);
+  const total=currentPortfolio?.total??0;
+  const weightedRate=currentPortfolio?.weightedRate??0;
+  const endForecast=forecastData?.state==="ready"&&!forecastLoading?forecastData.series[forecastData.series.length-1]:null;
+  const monthlyForecast=forecastData?.state==="ready"&&!forecastLoading?forecastData.thisMonth:null;
+  const selectedForecast=forecastData?.state==="ready"&&!forecastLoading?forecastData.assets.find(/* 查找当前详情资产的本币预测。 */ item=>item.id===selected?.id):undefined;
+
+  useEffect(/* 身份切换后只读取该用户的本机情景，避免旧账号设置影响新账号。 */ ()=>{
+    const owner=user?.id??null;
+    let raw:null|string=null;
+    if(owner!==null)try{raw=localStorage.getItem(`fulibu-forecast:${owner}`);}catch{/* 禁止存储时仍可使用默认情景。 */}
+    setScenarioState({owner,value:readForecastScenario(raw)});
+  },[user?.id]);
+  // changeScenario 保存当前用户本机情景，不写入他人的账号配置。
+  const changeScenario=(value:ForecastScenario)=>{
+    const owner=user?.id??null;setScenarioState({owner,value});
+    if(owner!==null)try{localStorage.setItem(`fulibu-forecast:${owner}`,JSON.stringify(value));}catch{/* 本机存储不可用不影响预测。 */}
+  };
+  useEffect(/* 只应用当前身份与情景的预测，数据补齐后自动重新读取。 */ ()=>{
+    const owner=user?.id??null;
+    setForecastData(null);setForecastError("");
+    setRetirement(current=>current?{...current,projected_years:null,projected_date:undefined,forecast_state:"pending"}:current);
+    if(owner===null||scenarioState.owner!==owner){setForecastLoading(false);return;}
+    const controller=new AbortController();let timer:ReturnType<typeof setTimeout>;
+    // poll 从唯一后端引擎读取预测与退休，迟到响应和旧会话都不会覆盖当前结果。
+    const poll=async()=>{
+      const generation=++forecastGeneration.current;setForecastLoading(true);
+      let delay=60000;
+      try{
+        const response=await fetch(forecastURL(horizon,scenario),{signal:controller.signal});
+        const value=await response.json() as ForecastResponse&{error?:string};
+        if(controller.signal.aborted||!canApplyForecast(owner,activeForecastUser.current,generation,forecastGeneration.current))return;
+        if(response.status===401){setUser(null);return;}
+        if(!response.ok)throw new Error(value.error||"预测暂不可用");
+        setAssets(current=>sameStoredAssets(current,value.storedAssets)?current:value.storedAssets as Asset[]);
+        setExchangeRates(current=>sameForecastRates(current,value.rates)?current:value.rates);setExchangeDate(value.rateDate);
+        setForecastData(value);setRetirement(value.retirement as Retirement);setForecastError("");
+        if(value.state!=="ready")delay=10000;
+      }catch(error){if(!controller.signal.aborted){setForecastError(error instanceof Error?error.message:"读取预测失败");delay=15000;}}
+      finally{if(!controller.signal.aborted){setForecastLoading(false);timer=setTimeout(poll,delay);}}
+    };
+    timer=setTimeout(poll,150);
+    return /* 取消旧情景或旧身份的请求并清除轮询。 */ ()=>{controller.abort();clearTimeout(timer);++forecastGeneration.current;};
+  },[user?.id,scenarioState,horizon,assets,income,exchangeRates,forecastRevision]);
 
   const grouped = useMemo(/* 缓存各资产类别的人民币金额合计。 */ () => {
     return (Object.keys(categoryMeta) as Category[]).map(/* 计算当前类别下的资产人民币金额合计。 */ (category) => ({
@@ -364,9 +406,7 @@ export default function Dashboard() {
   const forecastRateStatus = !marketChecked || marketPending || syncing ? "正在计算" : "年化暂不可用";
   const limitedHistoryCount = displayAssets.filter(/* 筛选历史价格覆盖不足的证券资产。 */ (asset) => asset.market_return?.historyLimited).length;
   const selectedMarket = selected ? displayAssets.find(/* 从最新展示资产中查找当前选中资产。 */ (asset) => asset.id === selected.id) ?? selected : null;
-  const chartValues = portfolioSeries?.map(/* 提取每年的预测总额，作为收益增长图的数值。 */ (item) => item.forecast) ?? [];
-  const minChart = Math.min(...chartValues);
-  const maxChart = Math.max(...chartValues);
+
 
   // refreshHistory 重新读取资产历史走势数据。
   async function refreshHistory() {
@@ -400,8 +440,6 @@ export default function Dashboard() {
       }
       if (!response.ok) throw new Error(data.error || "保存工资设置失败");
       setIncome(data.income);
-      const goalResponse = await fetch("/api/retirement");
-      if (goalResponse.ok) setRetirement(await goalResponse.json());
       setToast("收入与期权归属计划已保存，预测已更新");
     } catch (error) {
       setToast(error instanceof Error ? error.message : "保存工资设置失败");
@@ -605,7 +643,7 @@ export default function Dashboard() {
             <div className="total-card-main">
               <div className="total-card-amount">
                 <div className="total-value">{missingExchangeRate ? "行情或汇率暂不可用" : money(total)}</div>
-                <div className="change-row"><span className="change-pill">汇率折算</span><span title={monthlyGrowth && !missingHistoricalRates ? `${income.forecast_as_of} 至 ${monthlyGrowth.endDate}：现有资产预估收益 ${money(monthlyGrowth.investmentGain)} + 本月预计到账本金 ${money(monthlyGrowth.savingsContribution)}（储蓄、奖金、期权）；历史年化用于估算，已到账收入不重复计入。` : undefined}>本月剩余预估增长 {monthlyGrowth === null ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : money(monthlyGrowth.expectedGain)}</span></div>
+                <div className="change-row"><span className="change-pill">汇率折算</span><span title={monthlyForecast?`${forecastData?.asOf} 至 ${monthlyForecast.date}：投资收益 ${money(monthlyForecast.investmentGain)} + 到账本金 ${money(monthlyForecast.contributions)}`:undefined}>本月剩余预估增长 {monthlyForecast?money(monthlyForecast.totalGain):forecastLoading?"正在计算":"等待预测数据"}</span><small className="month-breakdown">{monthlyForecast?`投资收益 ${money(monthlyForecast.investmentGain)} · 到账本金 ${money(monthlyForecast.contributions)}`:""}</small></div>
               </div>
               <aside className="exchange-panel" aria-label="人民币、美元、港元双向汇率" aria-live="polite">
                 <span className="exchange-panel-title">{exchangeDate && !exchangeOutdated ? "今日汇率" : "最新可用汇率"}</span>
@@ -617,7 +655,7 @@ export default function Dashboard() {
             </div>
             <div className="mini-stats">
               <div><span>可产生收益</span><strong>{missingExchangeRate ? "等待汇率" : money(total - (grouped.find(/* 查找固定资产分组，用于显示固定资产总额。 */ (g) => g.category === "fixed")?.amount || 0))}</strong></div>
-              <div><span>组合预期年化（根据最近{lookback}年数据计算）</span><strong>{missingExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : `${weightedRate.toFixed(2)}%`}</strong><small className="portfolio-rate-note">{limitedHistoryCount ? `其中 ${limitedHistoryCount} 项历史不足` : "\u00a0"}</small></div>
+              <div><span>组合历史年化（近{lookback}年）</span><strong>{missingExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : `${weightedRate.toFixed(2)}%`}</strong><small className="portfolio-rate-note">{limitedHistoryCount ? `其中 ${limitedHistoryCount} 项历史不足` : "\u00a0"}</small></div>
             </div>
           </article>
 
@@ -642,13 +680,13 @@ export default function Dashboard() {
 
         <section className="forecast-card" id="forecast">
           <div className="forecast-copy">
-            <span className="card-kicker">未来收益推演</span>
+            <span className="card-kicker">稳健资产情景</span>
             <h2>{horizon} 年后，预计拥有</h2>
-            <div className="forecast-number">{missingForecastExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : money(forecast)}</div>
-            <p>仅现有资产计算复利，未来新增资金只计本金。预计新增 <b>{missingForecastExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : money(expectedGain)}</b>{income.monthly_savings > 0 || income.annual_bonus > 0 || (income.options?.length ?? 0) > 0 ? `（含储蓄、年终奖与期权净收入 ${(missingForecastExchangeRate ? "等待汇率" : money(savingsContribution))}）` : ""}</p>
+            <div className="forecast-number">{endForecast?money(endForecast.p50):forecastLoading?"正在计算":"预测暂不可用"}</div>
+            <p>显示模拟中位数。仅现有资产计算收益，未来新增资金只计本金。</p>
             <form className="retirement-form" onSubmit={saveRetirement}>
-              <div><span className="card-kicker">退休目标资产</span><strong>{retirement?.target_cny ? `${retirement.progress.toFixed(1)}% 已完成` : "添加退休后希望拥有的资产"}</strong>
-                {retirement?.target_cny ? <small>当前 {money(retirement.current_cny)} / 目标 {money(retirement.target_cny)} · {retirement.projected_years === null ? (retirement.missing_currencies?.length ? `等待汇率：${retirement.missing_currencies.join("、")}` : "按当前计划暂无法预计完成时间") : retirement.projected_years === 0 ? "已达成" : `预计 ${retirement.projected_date ?? ""} 达成（${retirement.projected_years.toFixed(1)} 年后）`}</small> : <small>仅现有资产计算收益；未来储蓄、年终奖及期权按到账日期计入本金。</small>}</div>
+              <div><span className="card-kicker">退休目标资产</span><strong>{retirement?.complete===false?"等待完整汇率":retirement?.target_cny ? `${retirement.progress.toFixed(1)}% 已完成` : "添加退休后希望拥有的资产"}</strong>
+                {retirement?.target_cny ? <small>当前可用 {money(retirement.liquid_cny??retirement.current_cny)} / 今日购买力目标 {money(retirement.target_cny)} · {retirement.forecast_state === "pending" ? (forecastError || "正在按当前情景计算") : retirement.projected_years === null ? (retirement.missing_currencies?.length ? `等待汇率：${retirement.missing_currencies.join("、")}` : `所选${horizon}年内未形成可用的达标中位日期`) : retirement.projected_years === 0 ? "已达成" : `首次达标中位日期 ${retirement.projected_date ?? ""}（${retirement.projected_years.toFixed(1)} 年后）`}</small> : <small>仅现有资产计算收益；未来储蓄、年终奖及期权按到账日期计入本金；固定资产不计入退休可用余额。</small>}</div>
               <label><span>资产类型</span><select name="category" defaultValue="deposit"><option value="deposit">存款</option><option value="fund">基金</option><option value="stock">股票</option><option value="housing">房产</option><option value="fixed">其他资产</option></select></label>
               <label><span>目标资产名称</span><input name="name" required placeholder="例如：养老年金" /></label><label><span>金额</span><input name="amount" type="number" min="0.01" step="0.01" required placeholder="例如 1000000" /></label><label><span>币种</span><select name="currency" defaultValue="CNY"><option>CNY</option><option>USD</option><option>HKD</option><option>EUR</option></select></label>
               <button disabled={savingRetirement}>{savingRetirement ? "添加中…" : "添加目标资产"}</button>
@@ -657,27 +695,14 @@ export default function Dashboard() {
             <IncomePlanner key={`${user?.id}:${income.version}`} income={income} saving={savingIncome} onSave={saveIncome} />
             <div className="control-block">
               <span>预测到未来</span>
-              <div className="segmented">{[1, 3, 5, 10].map(/* 为每个可选预测年限渲染切换按钮。 */ (year) => <button className={horizon === year ? "active" : ""} key={year} onClick={/* 更新收益预测年限。 */ () => setHorizon(year)}>{year}年</button>)}</div>
+              <div className="segmented">{[1, 3, 5, 10, 20, 30].map(/* 为每个可选预测年限渲染切换按钮。 */ (year) => <button className={horizon === year ? "active" : ""} key={year} onClick={/* 更新收益预测年限。 */ () => setHorizon(year)}>{year}年</button>)}</div>
             </div>
             <div className="sync-row">
-              <label>历史区间<select value={lookback} onChange={(event) => { setLookback(Number(event.target.value)); setMarketChecked(false); }}><option value="1">近1年</option><option value="3">近3年</option><option value="5">近5年</option><option value="10">近10年</option></select></label>
+              <label>历史年化展示区间<select value={lookback} onChange={(event) => { setLookback(Number(event.target.value)); setMarketChecked(false); }}><option value="1">近1年</option><option value="3">近3年</option><option value="5">近5年</option><option value="10">近10年</option></select></label>
               <button onClick={syncMarketRates} disabled={syncing}>{syncing ? "读取中…" : "刷新价格与收益率"}</button>
             </div>
           </div>
-          <div className="chart-wrap" aria-label={`未来 ${horizon} 年资产预测折线图`}>
-            <div className="chart-top"><span>资产增长曲线</span><span className="forecast-legend"><i /> 现有资产复利 + 未来新增本金</span></div>
-            {!missingForecastExchangeRate && !missingHistoricalRates ? <div className="chart">
-              <span className="y-label top">{money(maxChart)}</span><span className="y-label bottom">{money(minChart)}</span>
-              <div className="gridline gridline-1"/><div className="gridline gridline-2"/><div className="gridline gridline-3"/>
-              <div className="bars">
-                {chartValues.map(/* 将预测金额转换为柱状图高度并渲染对应年份。 */ (value, index) => {
-                  const height = maxChart === minChart ? 12 : 18 + (value - minChart) / (maxChart - minChart) * 62;
-                  return <div className="bar-column" key={index}><span className="bar-value">{index === chartValues.length - 1 ? `+${money(value - total)}` : ""}</span><div className="bar" style={{ height: `${height}%` }} /><small>{index === 0 ? "现在" : `${index}年`}</small></div>;
-                })}
-              </div>
-            </div> : <div className="unavailable-chart">{missingForecastExchangeRate ? "等待完整汇率后显示预测曲线" : `${forecastRateStatus}，历史数据补齐后显示预测曲线`}</div>}
-            <p className="disclaimer">预测基于历史收益率与输入利率，并在月末计入储蓄、在领取或变现日期计入年终奖和期权净收入，新增资金只计本金，只有现有资产参与复利；外币按当前汇率不变测算，不代表实际收益或投资承诺。</p>
-          </div>
+          <ForecastPanel key={user.id} data={forecastData} loading={forecastLoading} error={forecastError} assets={assets} scenario={scenario} onChange={changeScenario} years={horizon} />
         </section>
 
         <HistorySection history={history} />
@@ -697,7 +722,7 @@ export default function Dashboard() {
                 <span className="asset-icon" style={{ background: `${meta.color}18`, color: meta.color }}>{meta.short}</span>
                 <span className="asset-main"><strong>{asset.name}</strong><small>{meta.name}{asset.code ? ` · ${asset.code}` : ""}{asset.quantity ? ` · ${quantityText(asset.quantity)} ${asset.category === "stock" ? "股" : "份"}` : ""} · {asset.note}</small></span>
                 <span className="asset-rate">
-                  <small>{asset.category === "fixed" ? "不计收益" : "预测年化"}</small>
+                  <small>{asset.category === "fixed" ? "不计收益" : "历史/输入年化"}</small>
                   <strong className={asset.annual_rate < 0 ? "negative" : ""}>{asset.category === "fixed" ? "—" : needsMarketRate(asset) && !asset.market_return ? forecastRateStatus : `${asset.annual_rate.toFixed(2)}%`}</strong>
                   <em className={asset.market_return?.historyLimited ? "asset-rate-note limited" : "asset-rate-note"}>{asset.market_return?.stale ? "旧数据 · " : ""}{asset.market_return?.historyLimited ? <>历史不足，使用 {asset.market_return.actualDays} 天的数据计算</> : asset.market_return ? `数据截至 ${asset.market_return.endDate}` : "\u00a0"}</em>
                 </span>
@@ -736,7 +761,7 @@ export default function Dashboard() {
               : <div className="form-two"><label><span>计价币种</span><select name="currency" defaultValue={selectedMarket.currency}>{(Object.keys(currencyMeta) as Currency[]).map(/* 为币种或资产类别渲染下拉选项。 */ (code) => <option value={code} key={code}>{currencyMeta[code]} · {code}</option>)}</select></label><label><span>当前市值</span><input required name="amount" type="number" min="0.01" step="0.01" defaultValue={(selectedMarket.amount / 100).toFixed(2)} /></label></div>}
             <button className="save-edit-button" disabled={updating}>{updating ? "正在保存…" : "保存修改"}</button>
           </form>
-          <dl>{selectedMarket.quantity && <div><dt>持有数量</dt><dd>{quantityText(selectedMarket.quantity)} {selectedMarket.category === "stock" ? "股" : "份"}</dd></div>}{selectedMarket.market_return?.currentPrice && <div><dt>最新价格</dt><dd>{priceText(selectedMarket.market_return.currentPrice, selectedMarket.currency)} · {selectedMarket.market_return.priceDate}</dd></div>}{selectedMarket.currency !== "CNY" && <div><dt>折合人民币</dt><dd>{exchangeRates[selectedMarket.currency] ? money(toCny(selectedMarket, exchangeRates)) : "等待汇率"}</dd></div>}<div><dt>预测年化</dt><dd>{selectedMarket.category === "fixed" ? "不计收益" : needsMarketRate(selectedMarket) && !selectedMarket.market_return ? forecastRateStatus : `${selectedMarket.annual_rate.toFixed(2)}%`}</dd></div>{selectedMarket.code && <div><dt>资产代码</dt><dd>{selectedMarket.code}</dd></div>}{selectedMarket.market_return && <><div><dt>请求历史区间</dt><dd>{selectedMarket.market_return.requestedDays} 天</dd></div><div><dt>实际行情区间</dt><dd>{selectedMarket.market_return.startDate} 至 {selectedMarket.market_return.endDate} · {selectedMarket.market_return.actualDays} 天</dd></div><div><dt>行情缓存日期</dt><dd>{selectedMarket.market_return.calculationDate}{selectedMarket.market_return.stale ? " · 旧数据" : ""}</dd></div></>}<div><dt>{horizon} 年后预计</dt><dd>{needsMarketRate(selectedMarket) && !selectedMarket.market_return ? forecastRateStatus : originalMoney(calculatePortfolio([selectedMarket], { [selectedMarket.currency]: 1 }, horizon)?.forecast ?? selectedMarket.amount, selectedMarket.currency)}</dd></div></dl>
+          <dl>{selectedMarket.quantity && <div><dt>持有数量</dt><dd>{quantityText(selectedMarket.quantity)} {selectedMarket.category === "stock" ? "股" : "份"}</dd></div>}{selectedMarket.market_return?.currentPrice && <div><dt>最新价格</dt><dd>{priceText(selectedMarket.market_return.currentPrice, selectedMarket.currency)} · {selectedMarket.market_return.priceDate}</dd></div>}{selectedMarket.currency !== "CNY" && <div><dt>折合人民币</dt><dd>{exchangeRates[selectedMarket.currency] ? money(toCny(selectedMarket, exchangeRates)) : "等待汇率"}</dd></div>}<div><dt>历史/输入年化</dt><dd>{selectedMarket.category === "fixed" ? "不计收益" : needsMarketRate(selectedMarket) && !selectedMarket.market_return ? forecastRateStatus : `${selectedMarket.annual_rate.toFixed(2)}%`}</dd></div>{selectedMarket.code && <div><dt>资产代码</dt><dd>{selectedMarket.code}</dd></div>}{selectedMarket.market_return && <><div><dt>请求历史区间</dt><dd>{selectedMarket.market_return.requestedDays} 天</dd></div><div><dt>实际行情区间</dt><dd>{selectedMarket.market_return.startDate} 至 {selectedMarket.market_return.endDate} · {selectedMarket.market_return.actualDays} 天</dd></div><div><dt>行情缓存日期</dt><dd>{selectedMarket.market_return.calculationDate}{selectedMarket.market_return.stale ? " · 旧数据" : ""}</dd></div></>}<div><dt>稳健年化估计 · 本币</dt><dd>{selectedForecast?`${selectedForecast.annualRate.toFixed(2)}%`:"等待预测数据"}</dd></div><div><dt>{horizon} 年后中位数 · 本币</dt><dd>{selectedForecast?originalMoney(selectedForecast.forecast,selectedMarket.currency):"等待预测数据"}</dd></div></dl>
           <button className="danger-button" onClick={/* 提交当前资产的归档操作，并更新持仓展示。 */ () => removeAsset(selectedMarket)}>归档这项资产</button>
         </aside>
       </div>}

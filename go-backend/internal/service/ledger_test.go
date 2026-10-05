@@ -98,3 +98,25 @@ func TestSnapshotMissingTodayAllDoesNotReplaceExistingSnapshot(t *testing.T) {
 		t.Fatalf("expected one recovered snapshot, got %d", recovered)
 	}
 }
+
+// TestRetirementAggregateBound 验证合法单项金额相加超过安全范围时拒绝，不能整数绕回后误报达标。
+func TestRetirementAggregateBound(t *testing.T) {
+	for _, table := range []string{"assets", "retirement_goal_items"} {
+		t.Run(table, func(t *testing.T) {
+			db, err := database.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			db.Exec(`INSERT INTO users(email,display_name,password_hash,password_salt) VALUES('bound@example.test','test','hash','salt')`)
+			for i := 0; i < 2; i++ {
+				if _, err := db.Exec("INSERT INTO " + table + "(user_id,name,category,amount,currency) VALUES(1,'large','deposit',8000000000000000,'CNY')"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := RetirementFor(db, 1); err == nil {
+				t.Fatal("aggregate beyond safe integer accepted")
+			}
+		})
+	}
+}

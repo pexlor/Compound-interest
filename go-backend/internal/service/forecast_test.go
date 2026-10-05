@@ -109,3 +109,40 @@ func TestForecastHorizonDoesNotChangeEarlierYears(t *testing.T) {
 		t.Fatalf("horizon changed year1: %+v %+v", one.Series[1], three.Series[1])
 	}
 }
+
+// TestForecastBlockCentering 验证端点异常在实际三月抽样权重下不引入外汇或证券残差漂移。
+func TestForecastBlockCentering(t *testing.T) {
+	rows := monthlyFixture(0)
+	rows[len(rows)-1].TotalPrice *= math.Exp(.3)
+	in := ForecastInput{AsOf: day("2025-02-01"), Rates: map[string]float64{"USD": 7, "CNY": 1}, FX: map[string][]PriceObservation{"USD": rows}, History: map[string][]PriceObservation{"own": rows, "us_equity": rows}, Assets: []ForecastHolding{{ID: 1, Category: "stock", Currency: "USD", Amount: 100, Key: "own", Class: "us_equity"}}}
+	m, err := prepareForecastModel(in, ForecastOptions{Years: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, series := range [][]float64{m.FX["USD"], m.Residual[0]} {
+		sum := 0.0
+		for _, start := range m.Starts {
+			for j := 0; j < 3; j++ {
+				sum += series[start+j]
+			}
+		}
+		if math.Abs(sum/float64(len(m.Starts)*3)) > 1e-12 {
+			t.Fatalf("block drift %g", sum)
+		}
+	}
+}
+
+// TestForecastRequiresContinuousCommonHistory 验证累计月份足够但最长共同区间不足三年的输入被拒绝。
+func TestForecastRequiresContinuousCommonHistory(t *testing.T) {
+	rows := monthlyFixture(0)
+	sparse := []PriceObservation{}
+	for i, p := range rows {
+		if (i >= 1 && i <= 13) || (i >= 30 && i <= 42) || (i >= 60 && i <= 72) {
+			sparse = append(sparse, p)
+		}
+	}
+	in := ForecastInput{AsOf: day("2025-02-01"), Rates: map[string]float64{"USD": 7, "CNY": 1}, FX: map[string][]PriceObservation{"USD": sparse}, Assets: []ForecastHolding{{ID: 1, Category: "deposit", Currency: "USD", Amount: 100}}}
+	if _, err := SimulateForecast(in, ForecastOptions{Years: 1, Paths: 1}); err == nil {
+		t.Fatal("disconnected sample accepted")
+	}
+}

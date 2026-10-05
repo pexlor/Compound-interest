@@ -23,6 +23,8 @@ type ForecastInput struct {
 	Context                context.Context
 	AsOf                   time.Time
 	Assets                 []ForecastHolding
+	StoredAssets           []Asset
+	RateDate               string
 	History                map[string][]PriceObservation
 	FX                     map[string][]PriceObservation
 	Rates                  map[string]float64
@@ -195,6 +197,21 @@ func prepareForecastModel(in ForecastInput, o ForecastOptions) (forecastModel, e
 		if len(m.Months) < 36 {
 			return m, fmt.Errorf("共同历史月份不足36个月")
 		}
+		longest, run := 1, 1
+		for i := 1; i < len(m.Months); i++ {
+			at, _ := time.Parse("2006-01", m.Months[i-1])
+			if at.AddDate(0, 1, 0).Format("2006-01") == m.Months[i] {
+				run++
+			} else {
+				run = 1
+			}
+			if run > longest {
+				longest = run
+			}
+		}
+		if longest < 36 {
+			return m, fmt.Errorf("连续共同历史不足36个月")
+		}
 		for i := 0; i+2 < len(m.Months); i++ {
 			at, _ := time.Parse("2006-01", m.Months[i])
 			if at.AddDate(0, 1, 0).Format("2006-01") == m.Months[i+1] && at.AddDate(0, 2, 0).Format("2006-01") == m.Months[i+2] {
@@ -212,11 +229,7 @@ func prepareForecastModel(in ForecastInput, o ForecastOptions) (forecastModel, e
 			if m.Assets[i].Months >= 36 {
 				source = own[i]
 			}
-			center := 0.0
-			for _, key := range m.Months {
-				center += source[key]
-			}
-			center /= float64(len(m.Months))
+			center := blockCenter(source, m.Months, m.Starts)
 			for j, key := range m.Months {
 				r[j] = source[key] - center
 			}
@@ -225,17 +238,24 @@ func prepareForecastModel(in ForecastInput, o ForecastOptions) (forecastModel, e
 	}
 	for _, c := range currencies {
 		r := make([]float64, len(m.Months))
-		center := 0.0
-		for _, key := range m.Months {
-			center += fxMonthly[c][key]
-		}
-		center /= float64(len(m.Months))
+		center := blockCenter(fxMonthly[c], m.Months, m.Starts)
 		for j, key := range m.Months {
 			r[j] = fxMonthly[c][key] - center
 		}
 		m.FX[c] = r
 	}
 	return m, nil
+}
+
+// blockCenter 按真实三月起点及偏移权重计算中心，避免端点样本改变设定漂移。
+func blockCenter(series map[string]float64, months []string, starts []int) float64 {
+	sum := 0.0
+	for _, start := range starts {
+		for offset := 0; offset < 3; offset++ {
+			sum += series[months[start+offset]]
+		}
+	}
+	return sum / float64(len(starts)*3)
 }
 
 // forecastCheckpoint 描述月内一个现金/报告/边界日期与对应历史抽样月份。
@@ -353,6 +373,9 @@ func SimulateForecast(in ForecastInput, o ForecastOptions) (ForecastResult, erro
 		}
 	}
 
+	if math.IsNaN(total) || math.IsInf(total, 0) || total > 9e15 || float64(in.Target)*math.Pow(1+o.Inflation/100, float64(o.Years)+.01) > 9e15 {
+		return out, fmt.Errorf("余额或目标超出安全金额范围")
+	}
 	ctx := in.Context
 	if ctx == nil {
 		ctx = context.Background()
@@ -395,6 +418,9 @@ func SimulateForecast(in ForecastInput, o ForecastOptions) (ForecastResult, erro
 					logReturn += m.Residual[i][index]
 				}
 				balances[i] *= math.Exp(logReturn * p.Fraction)
+				if math.IsNaN(balances[i]) || math.IsInf(balances[i], 0) || balances[i] > 9e15 {
+					return out, fmt.Errorf("本币模拟金额超出范围，请缩短预测期限")
+				}
 			}
 			for c, changes := range m.FX {
 				fx[c] *= math.Exp(changes[index] * p.Fraction)
