@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// TestMarketCachePersistsAllIntervalsAndDeduplicates 验证一次同步生成四档持久化年化，并合并同证券的并发请求。
 func TestMarketCachePersistsAllIntervalsAndDeduplicates(t *testing.T) {
 	db, _, _ := apiFixture(t)
 	c := marketCacheFor(db)
@@ -50,6 +51,7 @@ func TestMarketCachePersistsAllIntervalsAndDeduplicates(t *testing.T) {
 	}
 }
 
+// TestMarketCacheFailurePreservesLastSuccess 验证同步失败不会删除日数据或将成功年化覆盖为零。
 func TestMarketCacheFailurePreservesLastSuccess(t *testing.T) {
 	db, _, _ := apiFixture(t)
 	c := marketCacheFor(db)
@@ -74,6 +76,7 @@ func TestMarketCacheFailurePreservesLastSuccess(t *testing.T) {
 	}
 }
 
+// TestMissingObservationForcesHistoryRepair 验证已存行情日期丢失时主动发现并补齐完整范围。
 func TestMissingObservationForcesHistoryRepair(t *testing.T) {
 	db, _, _ := apiFixture(t)
 	c := marketCacheFor(db)
@@ -104,6 +107,7 @@ func TestMissingObservationForcesHistoryRepair(t *testing.T) {
 	}
 }
 
+// TestDashboardIncludesCachedRatesWithoutExternalFetch 验证首屏直接携带缓存年化，无需再次访问行情上游。
 func TestDashboardIncludesCachedRatesWithoutExternalFetch(t *testing.T) {
 	db, h, cookie := apiFixture(t)
 	db.Exec(`INSERT INTO assets(user_id,name,category,code,amount,quantity,currency) VALUES(1,'fund','fund','021000',10000,100,'CNY')`)
@@ -122,6 +126,7 @@ func TestDashboardIncludesCachedRatesWithoutExternalFetch(t *testing.T) {
 	}
 }
 
+// TestChangedHistoryRecomputesEveryInterval 验证历史修订后各区间年化全部重新计算。
 func TestChangedHistoryRecomputesEveryInterval(t *testing.T) {
 	db, _, _ := apiFixture(t)
 	c := marketCacheFor(db)
@@ -141,6 +146,7 @@ func TestChangedHistoryRecomputesEveryInterval(t *testing.T) {
 	}
 }
 
+// TestMarketCacheStatusReportsOnlyCurrentUserSecurities 验证状态接口仅展示当前用户持有证券，不泄露其他持仓。
 func TestMarketCacheStatusReportsOnlyCurrentUserSecurities(t *testing.T) {
 	db, h, cookie := apiFixture(t)
 	db.Exec(`INSERT INTO assets(user_id,name,category,code,amount,currency) VALUES(1,'fund','fund','021000',10000,'CNY')`)
@@ -155,6 +161,7 @@ func TestMarketCacheStatusReportsOnlyCurrentUserSecurities(t *testing.T) {
 	}
 }
 
+// TestIncrementalAdjustmentChangeRefreshesFullHistory 验证增量范围出现复权基准变化时先重取完整历史再发布年化。
 func TestIncrementalAdjustmentChangeRefreshesFullHistory(t *testing.T) {
 	db, _, _ := apiFixture(t)
 	c := marketCacheFor(db)

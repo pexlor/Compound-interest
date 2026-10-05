@@ -7,6 +7,7 @@ import (
 
 // Cache status is scoped to the caller's holdings; job records contain no
 // account identities or balances. It is useful for CLI and deployment checks.
+// marketCacheStatus 返回当前用户持仓的缓存覆盖情况、日快照数和当天任务状态。
 func (a *app) marketCacheStatus(w http.ResponseWriter, r *http.Request) {
 	u := a.need(w, r)
 	if u == nil {

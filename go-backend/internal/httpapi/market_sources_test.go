@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// TestFundSeriesReadsAllPagesAndRejectsIncomplete 验证基金实际分页全部读取，空页或中断不能被视为完整历史。
 func TestFundSeriesReadsAllPagesAndRejectsIncomplete(t *testing.T) {
 	for _, broken := range []bool{false, true} {
 		t.Run(fmt.Sprint(broken), func(t *testing.T) {
@@ -46,8 +47,10 @@ func TestFundSeriesReadsAllPagesAndRejectsIncomplete(t *testing.T) {
 	}
 }
 
+// quoteTransportForCache 将测试的上游请求转向本地 HTTP 服务。
 type quoteTransportForCache struct{ url string }
 
+// RoundTrip 为测试请求重写为本地服务地址。
 func (tr quoteTransportForCache) RoundTrip(r *http.Request) (*http.Response, error) {
 	cloned := r.Clone(r.Context())
 	u := *r.URL
@@ -58,6 +61,7 @@ func (tr quoteTransportForCache) RoundTrip(r *http.Request) (*http.Response, err
 	return http.DefaultTransport.RoundTrip(cloned)
 }
 
+// TestYahooSeriesRetainsRawAndAdjustedPrices 验证美股原价和复权价分开保存，并保留已知的历史起点。
 func TestYahooSeriesRetainsRawAndAdjustedPrices(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/q=" || r.URL.Query().Get("q") != "" {
@@ -73,6 +77,8 @@ func TestYahooSeriesRetainsRawAndAdjustedPrices(t *testing.T) {
 		t.Fatalf("%+v %v", series, err)
 	}
 }
+
+// TestMoneySeriesStoresPublishedSevenDayAnnualRate 验证货币基金保留公布七日年化及每日收益，不把收益当成单位净值。
 func TestMoneySeriesStoresPublishedSevenDayAnnualRate(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"TotalCount":2,"PageSize":20,"Data":{"LSJZList":[{"FSRQ":"2026-10-04","DWJZ":"0.3512","LJJZ":"1.3630"},{"FSRQ":"2026-10-03","DWJZ":"0.0000","LJJZ":"1.3620"}]}}`)
@@ -88,6 +94,7 @@ func TestMoneySeriesStoresPublishedSevenDayAnnualRate(t *testing.T) {
 	}
 }
 
+// TestTencentSeriesSeparatesRawAndAdjustedPrices 验证腾讯原始与复权日线分别采集，避免历史价格口径混用。
 func TestTencentSeriesSeparatesRawAndAdjustedPrices(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("q") != "" {
@@ -108,6 +115,7 @@ func TestTencentSeriesSeparatesRawAndAdjustedPrices(t *testing.T) {
 	}
 }
 
+// TestTencentYoungSecurityConfirmsAvailableHistoryStart 验证较新证券用交易起点信息确认历史不足，而不是误判来源截断。
 func TestTencentYoungSecurityConfirmsAvailableHistoryStart(t *testing.T) {
 	first := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC).Unix()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

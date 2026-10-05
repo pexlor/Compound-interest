@@ -39,6 +39,7 @@ func ReinitializeBackup(ctx context.Context, db *sql.DB) (string, error) {
 	return initializeCapture(ctx, db, true)
 }
 
+// initializeCapture 安装备份变更捕获及初始种子，已有源只加装缺失缓存表且保留检查点。
 func initializeCapture(ctx context.Context, db *sql.DB, reset bool) (string, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

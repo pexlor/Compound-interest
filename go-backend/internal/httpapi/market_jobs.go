@@ -9,6 +9,7 @@ import (
 	"fulibu-go/internal/service"
 )
 
+// nextMarketRun 计算上海时区下一次 09:30 或 17:00 刷新时刻。
 func nextMarketRun(now time.Time) time.Time {
 	now = now.In(shanghai)
 	morning := nextDailyRun(now, 9, 30)
@@ -18,6 +19,8 @@ func nextMarketRun(now time.Time) time.Time {
 	}
 	return evening
 }
+
+// dueMarketSlots 列出上海当天已经到时的刷新时段。
 func dueMarketSlots(now time.Time) []string {
 	now = now.In(shanghai)
 	slots := []string{}
@@ -29,6 +32,8 @@ func dueMarketSlots(now time.Time) []string {
 	}
 	return slots
 }
+
+// runMarketSlots 合并遗漏时段执行一次刷新，并持久化批次结果和失败冷却时间。
 func (a *app) runMarketSlots(ctx context.Context, now time.Time, refresh func(context.Context) (int, int, error)) error {
 	c := marketCacheFor(a.db)
 	c.jobsMu.Lock()
@@ -73,6 +78,8 @@ func (a *app) runMarketSlots(ctx context.Context, now time.Time, refresh func(co
 	log.Printf("[market-cache] batch slots=%v state=%s success=%d failure=%d", missing, state, good, bad)
 	return err
 }
+
+// runMarketJobs 后台恢复任务及预热缓存，在指定时刻刷新并重试失败批次。
 func (a *app) runMarketJobs(ctx context.Context) {
 	// Recovery coalesces all elapsed slots. If no slot is due, preload cache.
 	now := time.Now()
@@ -102,11 +109,14 @@ func (a *app) runMarketJobs(ctx context.Context) {
 	}
 
 }
+
+// refreshMarketBatch 对所有未归档持仓按证券去重采集，并更新汇率和个人日快照。
 func (a *app) refreshMarketBatch(ctx context.Context) (int, int, error) {
 	rows, err := a.db.QueryContext(ctx, `SELECT DISTINCT category,code FROM assets WHERE archived_at IS NULL AND code IS NOT NULL AND category IN ('stock','fund','money') ORDER BY category,code`)
 	if err != nil {
 		return 0, 0, err
 	}
+	// key 表示去重后的证券类别和代码。
 	type key struct{ cat, code string }
 	keys := []key{}
 	seen := map[string]bool{}
@@ -162,6 +172,8 @@ func (a *app) refreshMarketBatch(ctx context.Context) (int, int, error) {
 	}
 	return good, bad, nil
 }
+
+// recordCachedAssetSnapshots 以已有缓存更新证券估值并保存用户隔离的日快照，保护并发持仓编辑。
 func (a *app) recordCachedAssetSnapshots(ctx context.Context) error {
 	rows, err := a.db.QueryContext(ctx, `SELECT id FROM users ORDER BY id`)
 	if err != nil {
@@ -226,11 +238,13 @@ func (a *app) recordCachedAssetSnapshots(ctx context.Context) error {
 	return nil
 }
 
+// warmMissingMarketCache 启动时后台检查持仓缓存，只补齐缺失或过期数据。
 func (a *app) warmMissingMarketCache(ctx context.Context) {
 	rows, err := a.db.QueryContext(ctx, `SELECT DISTINCT category,code FROM assets WHERE archived_at IS NULL AND code IS NOT NULL AND category IN ('stock','fund','money')`)
 	if err != nil {
 		return
 	}
+	// item 保存预热时需要检查的持仓行情标识。
 	type item struct{ category, code string }
 	items := []item{}
 	for rows.Next() {
@@ -249,6 +263,7 @@ func (a *app) warmMissingMarketCache(ctx context.Context) {
 	}
 }
 
+// nextMarketWake 选择下一刷新时刻或一分钟后重试检查，避免启动秒数造成调度偏移。
 func nextMarketWake(now time.Time) time.Time {
 	next := nextMarketRun(now)
 	retry := now.Add(time.Minute)

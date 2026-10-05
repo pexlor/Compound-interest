@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS asset_daily_snapshots(user_id INTEGER NOT NULL,asset_
 CREATE TABLE IF NOT EXISTS market_refresh_runs(run_date TEXT NOT NULL,slot TEXT NOT NULL,job_state TEXT NOT NULL,started_at TEXT NOT NULL,finished_at TEXT NOT NULL DEFAULT '',success_count INTEGER NOT NULL DEFAULT 0,failure_count INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',PRIMARY KEY(run_date,slot));
 `
 
+// isMarketCacheTable 标识本次新增的缓存表，使已有备份只能进行已知的加法迁移。
 func isMarketCacheTable(name string) bool {
 	switch name {
 	case "market_daily_prices", "market_quotes", "market_sync_state", "market_return_cache", "asset_daily_snapshots", "market_refresh_runs":

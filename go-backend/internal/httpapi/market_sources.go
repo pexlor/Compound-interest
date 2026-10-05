@@ -14,10 +14,16 @@ import (
 	"time"
 )
 
+// dailyObservation 保存实际交易日的原始价格、收益价格和货币基金收益指标。
 type dailyObservation struct {
-	Date                                   string
-	Price, ReturnPrice, Income, AnnualRate float64
+	Date        string
+	Price       float64 // 原始收盘价或单位净值。
+	ReturnPrice float64 // 复权价或累计净值，用于收益计算。
+	Income      float64 // 货币基金每日每万份收益。
+	AnnualRate  float64 // 货币基金公布的七日年化百分比。
 }
+
+// marketSeries 承载已验证的日行情、报价及可确认的历史起点信息。
 type marketSeries struct {
 	Rows             []dailyObservation
 	Currency, Source string
@@ -26,14 +32,18 @@ type marketSeries struct {
 	QuoteDate        string
 }
 
+// contextTransport 在不改变基础传输器的前提下绑定采集任务上下文。
 type contextTransport struct {
 	ctx  context.Context
 	base http.RoundTripper
 }
 
+// RoundTrip 为上游请求附加同步任务上下文，支持取消和超时。
 func (t contextTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(r.Clone(t.ctx))
 }
+
+// contextClient 复制客户端并为所有请求附加可取消上下文，不改写调用者的客户端。
 func contextClient(ctx context.Context, client *http.Client) *http.Client {
 	copy := *client
 	base := copy.Transport
@@ -43,7 +53,11 @@ func contextClient(ctx context.Context, client *http.Client) *http.Client {
 	copy.Transport = contextTransport{ctx, base}
 	return &copy
 }
+
+// finitePositive 校验价格或汇率为有限正数，拒绝零值、非数和无穷值。
 func finitePositive(v float64) bool { return v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0) }
+
+// sortObservations 按实际行情日期排序并合并同日重复记录。
 func sortObservations(rows []dailyObservation) []dailyObservation {
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Date < rows[j].Date })
 	out := rows[:0]
@@ -59,10 +73,12 @@ func sortObservations(rows []dailyObservation) []dailyObservation {
 
 // Fund paging follows the provider's actual counts. A partial page or a
 // repeated/non-progressing page is an error, never proof of fund inception.
+// fetchFundSeries 按上游实际分页读取普通基金每日单位净值和累计净值。
 func fetchFundSeries(ctx context.Context, client *http.Client, code string, from time.Time) (marketSeries, error) {
 	return fetchFundNAVSeries(ctx, client, code, from, false)
 }
 
+// fetchFundNAVSeries 读取基金完整所需范围，货币基金同时保存每万份收益及公布年化。
 func fetchFundNAVSeries(ctx context.Context, client *http.Client, code string, from time.Time, money bool) (marketSeries, error) {
 	client = contextClient(ctx, client)
 	series := marketSeries{Currency: "CNY", Source: "东方财富历史净值"}
@@ -140,6 +156,7 @@ func fetchFundNAVSeries(ctx context.Context, client *http.Client, code string, f
 	return series, nil
 }
 
+// fetchUSSeries 取得美股原始和复权收盘价、可确认的历史起点及最新可用报价。
 func fetchUSSeries(ctx context.Context, client *http.Client, code string, from time.Time) (marketSeries, error) {
 	ticker := strings.TrimPrefix(strings.ToUpper(code), "US")
 	endpoint := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s?period1=%d&period2=%d&interval=1d&events=div,splits&includeAdjustedClose=true", url.PathEscape(strings.ReplaceAll(ticker, ".", "-")), from.Unix(), time.Now().Unix()+86400)
@@ -209,6 +226,7 @@ func fetchUSSeries(ctx context.Context, client *http.Client, code string, from t
 	return series, nil
 }
 
+// fetchTencentRange 读取指定日期范围的原始或前复权日线，并拒绝截断和越界响应。
 func fetchTencentRange(ctx context.Context, client *http.Client, symbol string, start, stop time.Time, adjustment string) ([]marketPoint, error) {
 	param := fmt.Sprintf("%s,day,%s,%s,640,%s", symbol, start.Format("2006-01-02"), stop.Format("2006-01-02"), adjustment)
 	req, err := http.NewRequestWithContext(ctx, "GET", "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"+url.Values{"param": {param}}.Encode(), nil)
@@ -258,6 +276,8 @@ func fetchTencentRange(ctx context.Context, client *http.Client, symbol string, 
 	}
 	return points, nil
 }
+
+// fetchTencentSeries 分年取得完整证券日线，独立保存原价与复权价并核对历史起点。
 func fetchTencentSeries(ctx context.Context, client *http.Client, category, code string, from time.Time) (marketSeries, error) {
 	symbol, currency, err := tencentSymbol(category, code)
 	if err != nil {
@@ -312,6 +332,7 @@ func fetchTencentSeries(ctx context.Context, client *http.Client, category, code
 	return series, nil
 }
 
+// fetchMarketSeries 按证券市场和基金类别选择可复用的每日行情采集器。
 func fetchMarketSeries(ctx context.Context, client *http.Client, category, code string, from time.Time) (marketSeries, error) {
 	if isUSSecurity(code) {
 		return fetchUSSeries(ctx, client, code, from)
@@ -322,6 +343,7 @@ func fetchMarketSeries(ctx context.Context, client *http.Client, category, code 
 	return fetchTencentSeries(ctx, client, category, code, from)
 }
 
+// fetchSecurityFirstTrade 查询供应商最早交易日期，作为较新证券历史覆盖的核对依据。
 func fetchSecurityFirstTrade(ctx context.Context, client *http.Client, symbol string) (time.Time, error) {
 	ticker := ""
 	switch {

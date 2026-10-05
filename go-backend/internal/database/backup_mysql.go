@@ -56,6 +56,7 @@ func OpenBackupMySQL(dsn string) (*sql.DB, error) {
 
 // Bootstrap ownership is persisted before DDL so interrupted initialization can resume.
 // An application database without our marker is never modified, even if currently empty.
+// InitializeBackupTarget 核对备份归属和表结构，初始化或仅新增已知缓存表。
 func InitializeBackupTarget(ctx context.Context, target *sql.DB, sourceID string, requireExisting bool) error {
 	if sourceID == "" {
 		return errors.New("empty backup source")
@@ -182,6 +183,7 @@ func mysqlBackupNullable(table backupTable, column string) bool {
 	return column == "code" && table.name == "assets" || column == "quantity" || column == "investment_amount" || column == "archived_at" || column == "user_id" && table.name == "assets" || column == "rate_date" && table.name == "asset_history"
 }
 
+// mysqlBackupType 将应用字段映射为严格的 MySQL 备份类型，保证金额及缓存精度。
 func mysqlBackupType(column string) string {
 	switch column {
 	case "id", "user_id", "password_iterations", "expires_at", "amount", "investment_amount", "version", "monthly_salary", "monthly_savings", "annual_bonus", "status", "total_cny", "lookback_days", "requested_days", "actual_days", "history_limited", "asset_id", "inception_known", "input_version", "observation_count", "success_count", "failure_count":

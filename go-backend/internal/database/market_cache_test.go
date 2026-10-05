@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestMarketCacheMigrationAndReopen 验证新缓存表及备份注册存在，并确认重新打开数据库不会丢失数据。
 func TestMarketCacheMigrationAndReopen(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(dir)
@@ -35,6 +36,7 @@ func TestMarketCacheMigrationAndReopen(t *testing.T) {
 	}
 }
 
+// TestExistingBackupAddsCaptureForMarketCacheTables 验证已有备份源补装新表捕获触发器并保留源身份。
 func TestExistingBackupAddsCaptureForMarketCacheTables(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {

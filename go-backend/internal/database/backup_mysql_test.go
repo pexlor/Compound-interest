@@ -142,6 +142,7 @@ func TestBackupTargetRejectsIncompatibleStructure(t *testing.T) {
 	}
 }
 
+// TestBackupTargetAddsMarketTablesToOwnedLegacyTarget 验证已确认归属的 MySQL 备份新增缓存表时保留原有数据。
 func TestBackupTargetAddsMarketTablesToOwnedLegacyTarget(t *testing.T) {
 	ctx := context.Background()
 	target := backupMySQLTestDB(t)

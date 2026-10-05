@@ -269,6 +269,7 @@ export default function Dashboard() {
     if (!user) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof window.setTimeout>;
+    // poll 定期读取当前区间缓存，后台补齐时缩短检查间隔。
     const poll = async () => {
       await loadMarketRates(lookback, false, controller.signal);
       if (!controller.signal.aborted) timer = window.setTimeout(poll, marketPending ? 3000 : 60000);

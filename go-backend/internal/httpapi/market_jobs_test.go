@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// TestNextMarketRunShanghai 验证上海时间两个固定时段及跨日边界的计算。
 func TestNextMarketRunShanghai(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"2026-10-05T01:29:59Z", "2026-10-05T09:30:00+08:00"},
@@ -20,6 +21,8 @@ func TestNextMarketRunShanghai(t *testing.T) {
 		}
 	}
 }
+
+// TestMarketJobsRestartCoalescesAndPersists 验证重启后遗漏多个时段只执行一次，成功记录持久化防重。
 func TestMarketJobsRestartCoalescesAndPersists(t *testing.T) {
 	db, _, _ := apiFixture(t)
 	a := &app{db: db}
@@ -38,6 +41,8 @@ func TestMarketJobsRestartCoalescesAndPersists(t *testing.T) {
 		t.Fatalf("calls=%d complete=%d", calls, n)
 	}
 }
+
+// TestMarketJobsFailureIsRetryable 验证失败批次经过冷却后能再次执行并更新为成功。
 func TestMarketJobsFailureIsRetryable(t *testing.T) {
 	db, _, _ := apiFixture(t)
 	a := &app{db: db}
@@ -57,6 +62,7 @@ func TestMarketJobsFailureIsRetryable(t *testing.T) {
 	}
 }
 
+// TestDailyAssetSnapshotsArePrivateAndDoNotInventHistory 验证个人日快照隔离账户，且不虚构录入前余额。
 func TestDailyAssetSnapshotsArePrivateAndDoNotInventHistory(t *testing.T) {
 	db, _, _ := apiFixture(t)
 	a := &app{db: db, ledger: service.NewLedger(db)}
@@ -81,6 +87,7 @@ func TestDailyAssetSnapshotsArePrivateAndDoNotInventHistory(t *testing.T) {
 	}
 }
 
+// TestMarketWakeAlignsToScheduledBoundary 验证临近刷新时段时准确唤醒，不受进程启动秒数影响。
 func TestMarketWakeAlignsToScheduledBoundary(t *testing.T) {
 	now := time.Date(2026, 10, 5, 9, 29, 53, 0, shanghai)
 	want := time.Date(2026, 10, 5, 9, 30, 0, 0, shanghai)

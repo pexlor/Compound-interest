@@ -19,6 +19,7 @@ import (
 var marketIntervals = []int{365, 1095, 1825, 3650}
 var marketCaches sync.Map
 
+// marketCache 按数据库共享采集并发、请求合并及汇率和调度互斥状态。
 type marketCache struct {
 	db          *sql.DB
 	mu          sync.Mutex
@@ -32,10 +33,13 @@ type marketCache struct {
 	jobsMu      sync.Mutex
 }
 
+// marketCacheFor 按数据库取得共享缓存协调器，使接口和定时任务复用并发请求。
 func marketCacheFor(db *sql.DB) *marketCache {
 	v, _ := marketCaches.LoadOrStore(db, &marketCache{db: db, flights: map[string]chan struct{}{}, slots: make(chan struct{}, 2), ctx: context.Background(), client: &http.Client{Timeout: 12 * time.Second}, fetch: fetchMarketSeries, retryDelays: []time.Duration{2 * time.Second, 5 * time.Second}})
 	return v.(*marketCache)
 }
+
+// marketIdentity 校验证券类别和代码，返回跨账户复用的规范化行情标识。
 func marketIdentity(category, code string) (string, string, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if category != "stock" && category != "fund" && category != "money" {
@@ -63,18 +67,28 @@ func marketIdentity(category, code string) (string, string, error) {
 		return "stock", strings.ToUpper(symbol), nil
 	}
 }
+
+// marketDate 返回上海时区的当前计算日期。
 func marketDate() string { return time.Now().In(shanghai).Format("2006-01-02") }
-func cacheTime() string  { return time.Now().UTC().Format(time.RFC3339Nano) }
+
+// cacheTime 返回带时区的 UTC 获取时间，供新鲜度检查和重启恢复使用。
+func cacheTime() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
+// lastError 读取指定证券最近一次同步错误，成功时返回空字符串。
 func (c *marketCache) lastError(cat, code string) string {
 	var e string
 	c.db.QueryRow(`SELECT last_error FROM market_sync_state WHERE category=? AND code=?`, cat, code).Scan(&e)
 	return e
 }
+
+// busy 在并发锁保护下检查指定证券是否正在同步。
 func (c *marketCache) busy(cat, code string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.flights[cat+":"+code] != nil
 }
+
+// read 仅从数据库读取最近成功的年化及报价，并标记旧版本或同步失败状态。
 func (c *marketCache) read(cat, code string, days int) (marketResult, bool) {
 	var payload string
 	var version, current int
@@ -89,6 +103,8 @@ func (c *marketCache) read(cat, code string, days int) (marketResult, bool) {
 	c.db.QueryRow(`SELECT price,currency,price_date,fetched_at FROM market_quotes WHERE category=? AND code=?`, cat, code).Scan(&result.CurrentPrice, &result.PriceCurrency, &result.PriceDate, &result.FetchedAt)
 	return result, true
 }
+
+// get 优先返回持久化缓存，发现缺失或过期时合并后台补齐请求。
 func (c *marketCache) get(category, code string, days int, force bool) (marketResult, error) {
 	if days < 1 || days > 3650 {
 		return marketResult{}, fmt.Errorf("不支持的历史区间")
@@ -130,6 +146,8 @@ func (c *marketCache) get(category, code string, days int, force bool) (marketRe
 	}
 	return result, nil
 }
+
+// startSync 合并同证券的同步任务，限制并发及重试，并返回任务完成信号。
 func (c *marketCache) startSync(cat, code string, force bool) <-chan struct{} {
 	key := cat + ":" + code
 	c.mu.Lock()
@@ -182,6 +200,8 @@ func (c *marketCache) startSync(cat, code string, force bool) <-chan struct{} {
 	}()
 	return done
 }
+
+// sync 补取历史和必要汇率，原子写入日数据，再重算各档年化。
 func (c *marketCache) sync(ctx context.Context, cat, code string, force bool) error {
 	from := time.Now().UTC().AddDate(0, 0, -3695)
 	var covered, full string
@@ -279,6 +299,8 @@ func (c *marketCache) sync(ctx context.Context, cat, code string, force bool) er
 	}
 	return c.calculate(ctx, cat, code, marketIntervals)
 }
+
+// serviceCurrency 判断行情源返回的币种是否为当前采集器支持的币种。
 func serviceCurrency(s string) bool {
 	switch s {
 	case "CNY", "USD", "HKD":
@@ -286,6 +308,8 @@ func serviceCurrency(s string) bool {
 	}
 	return false
 }
+
+// calculate 在一致的数据库事务中，根据日序列计算并保存指定区间年化。
 func (c *marketCache) calculate(ctx context.Context, cat, code string, intervals []int) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -390,11 +414,15 @@ func (c *marketCache) calculate(ctx context.Context, cat, code string, intervals
 	return tx.Commit()
 }
 
+// rateQuerier 统一数据库与事务的汇率查询接口。
 type rateQuerier interface{ QueryRow(string, ...any) *sql.Row }
 
+// historicalUSD 从数据库读取指定交易日及此前七天内最近有效的美元汇率。
 func (c *marketCache) historicalUSD(date string) (float64, error) {
 	return historicalUSDFrom(c.db, date)
 }
+
+// historicalUSDFrom 通过数据库或计算事务查询有效历史汇率，缺失时明确返回错误。
 func historicalUSDFrom(q rateQuerier, date string) (float64, error) {
 	at, err := time.Parse("2006-01-02", date)
 	if err != nil {
@@ -407,6 +435,8 @@ func historicalUSDFrom(q rateQuerier, date string) (float64, error) {
 	}
 	return rate, nil
 }
+
+// ensureUSDFX 串行补齐美元历史汇率范围，成功后才记录查询覆盖状态。
 func (c *marketCache) ensureUSDFX(ctx context.Context, from, to string, force bool) error {
 	c.fxMu.Lock()
 	defer c.fxMu.Unlock()
