@@ -141,6 +141,16 @@ func (a *app) refreshMarketBatch(ctx context.Context) (int, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
+	// 只要有风险持仓便预热代表性基准，基金的具体选择由预测情景决定。
+	if len(keys) > 0 {
+		for _, b := range service.ForecastBenchmarks() {
+			k := b.Category + ":" + b.Code
+			if !seen[k] {
+				keys = append(keys, key{b.Category, b.Code})
+				seen[k] = true
+			}
+		}
+	}
 	c := marketCacheFor(a.db)
 	dones := make([]<-chan struct{}, len(keys))
 	for i, k := range keys {

@@ -93,7 +93,7 @@ func TestRetirementIgnoresMissingCurrencyAfterTargetDate(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("save %d %v", status, v)
 	}
-	_, v = requestAPI(t, h, c, "", "GET", "/api/retirement", "", "")
+	_, v = requestAPI(t, h, c, "", "GET", "/api/retirement?inflation=0", "", "")
 	if v["projected_date"] != nextMonthEnd.Format("2006-01-02") {
 		t.Fatalf("later currency blocked date: %v", v)
 	}

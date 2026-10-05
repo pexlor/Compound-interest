@@ -4,6 +4,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"math"
 	"time"
@@ -262,6 +263,9 @@ func nullable(v sql.NullString) any {
 
 // Retirement 表示退休目标、当前资产、进度、预计达标时间和目标明细。
 type Retirement struct {
+	Complete          bool             `json:"complete"`
+	LiquidCNY         int64            `json:"liquid_cny"`
+	ForecastState     string           `json:"forecast_state"`
 	ProjectedDate     string           `json:"projected_date,omitempty"`
 	MissingCurrencies []string         `json:"missing_currencies,omitempty"`
 	TargetCNY         int64            `json:"target_cny"`
@@ -283,97 +287,95 @@ type RetirementItem struct {
 }
 
 // Retirement 汇总退休目标、当前资产和预计达成时间。
-// 它按日复利，按月末和实际领取/变现日期计入未来资金。
-func (s *Ledger) Retirement(userID int64) (Retirement, error) { return RetirementFor(s.db, userID) }
+// 它复用联合月度预测引擎，按现金日期累计未来本金。
+func (s *Ledger) Retirement(userID int64) (Retirement, error) {
+	now := time.Now().In(planningZone)
+	at := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	result, _, _, err := s.Forecast(context.Background(), userID, DefaultForecastOptions(), at)
+	return result.Retirement, err
+}
 
-// RetirementFor 读取目标、持仓、汇率和收入计划，计算退休进度、加权收益率与预计达标日期。
+// RetirementFor 读取目标、持仓与汇率，仅返回事务中的当前进度；模拟在释放事务后执行。
 func RetirementFor(q Queryer, userID int64) (Retirement, error) {
-	out := Retirement{Items: []RetirementItem{}}
+	out := Retirement{Items: []RetirementItem{}, Complete: true, MissingCurrencies: []string{}}
 	rates := map[string]float64{"CNY": 1}
 	rows, err := q.Query("SELECT currency,cny_rate FROM exchange_rates")
 	if err != nil {
 		return out, err
 	}
 	for rows.Next() {
-		var currency string
-		var rate float64
-		if rows.Scan(&currency, &rate) == nil && rate > 0 {
-			rates[currency] = rate
+		var c string
+		var r float64
+		if err = rows.Scan(&c, &r); err != nil {
+			rows.Close()
+			return out, err
+		}
+		if positiveFinite(r) {
+			rates[c] = r
 		}
 	}
+	err = rows.Err()
 	rows.Close()
-	goalItems, err := q.Query("SELECT id,name,category,amount,currency,version FROM retirement_goal_items WHERE user_id=? ORDER BY id", userID)
 	if err != nil {
 		return out, err
 	}
-	defer goalItems.Close()
-	var itemTarget int64
-	for goalItems.Next() {
+	seen := map[string]bool{}
+	// converted 校验汇率及金额范围，缺失时标记不完整，防止产生错误达标时间。
+	converted := func(amount int64, c string) (int64, error) {
+		r, ok := rates[c]
+		if !ok {
+			out.Complete = false
+			if !seen[c] {
+				out.MissingCurrencies = append(out.MissingCurrencies, c)
+				seen[c] = true
+			}
+			return 0, nil
+		}
+		v := math.Round(float64(amount) * r)
+		if v < 0 || v > 9e15 {
+			return 0, invalid("退休金额超出范围")
+		}
+		return int64(v), nil
+	}
+	goals, err := q.Query("SELECT id,name,category,amount,currency,version FROM retirement_goal_items WHERE user_id=? ORDER BY id", userID)
+	if err != nil {
+		return out, err
+	}
+	for goals.Next() {
 		var item RetirementItem
-		if goalItems.Scan(&item.ID, &item.Name, &item.Category, &item.Amount, &item.Currency, &item.Version) != nil {
-			continue
+		if err = goals.Scan(&item.ID, &item.Name, &item.Category, &item.Amount, &item.Currency, &item.Version); err != nil {
+			goals.Close()
+			return out, err
 		}
 		out.Items = append(out.Items, item)
-		if rate, ok := rates[item.Currency]; ok {
-			itemTarget += int64(math.Round(float64(item.Amount) * rate))
+		v, e := converted(item.Amount, item.Currency)
+		if e != nil {
+			goals.Close()
+			return out, e
 		}
+		out.TargetCNY += v
 	}
-	out.TargetCNY = itemTarget
-	assets, err := q.Query("SELECT amount,currency,annual_rate FROM assets WHERE user_id=? AND archived_at IS NULL", userID)
+	err = goals.Err()
+	goals.Close()
 	if err != nil {
 		return out, err
 	}
-	var weighted float64
-	for assets.Next() {
-		var amount int64
-		var currency string
-		var annual float64
-		if assets.Scan(&amount, &currency, &annual) != nil {
-			continue
-		}
-		rate, ok := rates[currency]
-		if !ok {
-			continue
-		}
-		value := float64(amount) * rate
-		out.CurrentCNY += int64(math.Round(value))
-		weighted += value * annual
-	}
-	assets.Close()
-	if out.CurrentCNY > 0 {
-		out.AnnualRate = weighted / float64(out.CurrentCNY)
-	}
-	if out.TargetCNY <= 0 {
-		return out, nil
-	}
-	out.Progress = math.Min(100, float64(out.CurrentCNY)/float64(out.TargetCNY)*100)
-	if out.CurrentCNY >= out.TargetCNY {
-		years := 0.0
-		out.ProjectedYears = &years
-		return out, nil
-	}
-	income, err := ReadIncome(q, userID)
+	assets, err := ListAssets(q, userID, false)
 	if err != nil {
 		return out, err
 	}
-	start := time.Now().In(planningZone)
-	start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, planningZone)
-	out.ProjectedDate = ProjectRetirement(start, out.CurrentCNY, out.TargetCNY, out.AnnualRate, income.MonthlySavings, income.Cashflows, rates)
-	seen := map[string]bool{}
-	for _, event := range income.Cashflows {
-		if _, ok := rates[event.Currency]; !ok && !seen[event.Currency] && (out.ProjectedDate == "" || event.Date <= out.ProjectedDate) {
-			seen[event.Currency] = true
-			out.MissingCurrencies = append(out.MissingCurrencies, event.Currency)
+	for _, a := range assets {
+		v, e := converted(a.Amount, a.Currency)
+		if e != nil {
+			return out, e
+		}
+		out.CurrentCNY += v
+		if liquidHolding(ForecastHolding{Category: a.Category}, false) {
+			out.LiquidCNY += v
 		}
 	}
-	if len(out.MissingCurrencies) > 0 {
-		out.ProjectedDate = ""
-		return out, nil
-	}
-	if out.ProjectedDate != "" {
-		date, _ := time.ParseInLocation("2006-01-02", out.ProjectedDate, planningZone)
-		years := date.Sub(start).Hours() / 24 / 365.25
-		out.ProjectedYears = &years
+	if out.TargetCNY > 0 && out.Complete {
+		out.Progress = math.Min(100, float64(out.LiquidCNY)/float64(out.TargetCNY)*100)
 	}
 	return out, nil
 }

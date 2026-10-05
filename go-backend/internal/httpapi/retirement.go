@@ -5,6 +5,7 @@ package httpapi
 import (
 	"database/sql"
 	"net/http"
+	"time"
 
 	"fulibu-go/internal/service"
 )
@@ -15,7 +16,7 @@ func retirementResponse(tx *sql.Tx, userID int64, status int, before, after any,
 	if err != nil {
 		return service.MutationResult{}, err
 	}
-	raw := map[string]any{"target_cny": result.TargetCNY, "current_cny": result.CurrentCNY, "progress": result.Progress, "projected_years": result.ProjectedYears, "projected_date": result.ProjectedDate, "missing_currencies": result.MissingCurrencies, "annual_rate": result.AnnualRate, "items": result.Items, "before": before, "after": after, "dryRun": dry, "moneyUnit": "minor"}
+	raw := map[string]any{"target_cny": result.TargetCNY, "current_cny": result.CurrentCNY, "progress": result.Progress, "projected_years": result.ProjectedYears, "projected_date": result.ProjectedDate, "missing_currencies": result.MissingCurrencies, "annual_rate": result.AnnualRate, "items": result.Items, "complete": result.Complete, "liquid_cny": result.LiquidCNY, "forecast_state": "pending", "before": before, "after": after, "dryRun": dry, "moneyUnit": "minor"}
 	return mutationJSON(status, raw)
 }
 
@@ -27,7 +28,15 @@ func (a *app) retirement(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		v, err := a.ledger.Retirement(u.ID)
+		o, err := forecastOptions(r)
+		if err != nil {
+			apiError(w, 400, "invalid_request", err.Error())
+			return
+		}
+		now := time.Now().In(shanghai)
+		at := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		response, _, _, err := a.ledger.Forecast(r.Context(), u.ID, o, at)
+		v := response.Retirement
 		if err != nil {
 			writeAPIError(w, err)
 			return

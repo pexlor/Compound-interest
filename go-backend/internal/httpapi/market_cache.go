@@ -453,15 +453,20 @@ func historicalUSDFrom(q rateQuerier, date string) (float64, error) {
 
 // ensureUSDFX 串行补齐美元历史汇率范围，成功后才记录查询覆盖状态。
 func (c *marketCache) ensureUSDFX(ctx context.Context, from, to string, force bool) error {
+	return c.ensureFX(ctx, "USD", from, to, force)
+}
+
+// ensureFX 串行补齐所需外币历史，保存共享覆盖状态；可供预测与历史人民币收益共用。
+func (c *marketCache) ensureFX(ctx context.Context, currency, from, to string, force bool) error {
 	c.fxMu.Lock()
 	defer c.fxMu.Unlock()
 	var oldFrom, oldTo, checked string
-	c.db.QueryRowContext(ctx, `SELECT covered_from,covered_to,checked_at FROM market_sync_state WHERE category='fx' AND code='USD'`).Scan(&oldFrom, &oldTo, &checked)
+	c.db.QueryRowContext(ctx, `SELECT covered_from,covered_to,checked_at FROM market_sync_state WHERE category='fx' AND code=?`, currency).Scan(&oldFrom, &oldTo, &checked)
 	last, _ := time.Parse(time.RFC3339Nano, checked)
 	if oldFrom != "" && oldFrom <= from && oldTo >= to && ((!force && time.Since(last) < 7*24*time.Hour) || time.Since(last) < time.Minute) {
 		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.frankfurter.dev/v2/rates?"+url.Values{"base": {"USD"}, "quotes": {"CNY"}, "from": {from}, "to": {to}}.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.frankfurter.dev/v2/rates?"+url.Values{"base": {currency}, "quotes": {"CNY"}, "from": {from}, "to": {to}}.Encode(), nil)
 	if err != nil {
 		return err
 	}
@@ -488,21 +493,21 @@ func (c *marketCache) ensureUSDFX(ctx context.Context, from, to string, force bo
 	now := cacheTime()
 	valid := 0
 	for _, r := range rates {
-		if r.Base != "USD" || r.Quote != "CNY" || !finitePositive(r.Rate) {
+		if r.Base != currency || r.Quote != "CNY" || !finitePositive(r.Rate) {
 			return errors.New("历史汇率无效")
 		}
 		if _, err = time.Parse("2006-01-02", r.Date); err != nil {
 			return err
 		}
 		valid++
-		if _, err = tx.ExecContext(ctx, `INSERT INTO exchange_rate_history(currency,cny_rate,rate_date,source,fetched_at) VALUES('USD',?,?,?,?) ON CONFLICT(currency,rate_date) DO UPDATE SET cny_rate=excluded.cny_rate,source=excluded.source,fetched_at=excluded.fetched_at`, r.Rate, r.Date, "Frankfurter", now); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO exchange_rate_history(currency,cny_rate,rate_date,source,fetched_at) VALUES(?,?,?,?,?) ON CONFLICT(currency,rate_date) DO UPDATE SET cny_rate=excluded.cny_rate,source=excluded.source,fetched_at=excluded.fetched_at`, currency, r.Rate, r.Date, "Frankfurter", now); err != nil {
 			return err
 		}
 	}
 	if valid == 0 {
 		return errors.New("没有有效历史汇率")
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO market_sync_state(category,code,covered_from,covered_to,checked_at,last_success) VALUES('fx','USD',?,?,?,?) ON CONFLICT(category,code) DO UPDATE SET covered_from=excluded.covered_from,covered_to=excluded.covered_to,checked_at=excluded.checked_at,last_success=excluded.last_success`, from, to, now, now); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO market_sync_state(category,code,covered_from,covered_to,checked_at,last_success) VALUES('fx',?,?,?,?,?) ON CONFLICT(category,code) DO UPDATE SET covered_from=excluded.covered_from,covered_to=excluded.covered_to,checked_at=excluded.checked_at,last_success=excluded.last_success,last_error=''`, currency, from, to, now, now); err != nil {
 		return err
 	}
 	return tx.Commit()
