@@ -157,7 +157,7 @@ func writeExportQuery(ctx context.Context, tx *sql.Tx, cw *csv.Writer, buf *byte
 			return count, e
 		}
 		for i, v := range values {
-			record[i] = exportCell(v, cols[i] == "amount" || cols[i] == "investment_amount")
+			record[i] = exportCell(v, cols[i] == "amount")
 		}
 		if e = cw.Write(record); e != nil {
 			return count, e
@@ -191,8 +191,8 @@ func exportCSV(ctx context.Context, tx *sql.Tx, userID int64, assets []service.A
 	headers := []string{}
 	switch name {
 	case "assets":
-		headers = []string{"资产编号", "资产名称", "类别", "证券代码", "金额(原币种主单位)", "持有数量", "币种", "年化假设(%)", "定投策略", "定投金额(原币种主单位)", "备注", "创建时间", "归档时间"}
-		queries = append(queries, exportQuery{`SELECT id,name,category,code,amount,quantity,currency,annual_rate,investment_strategy,investment_amount,note,created_at,archived_at FROM assets WHERE ` + filter + ` ORDER BY id`, args})
+		headers = []string{"资产编号", "资产名称", "类别", "证券代码", "金额(原币种主单位)", "持有数量", "币种", "年化假设(%)", "备注", "创建时间", "归档时间"}
+		queries = append(queries, exportQuery{`SELECT id,name,category,code,amount,quantity,currency,annual_rate,note,created_at,archived_at FROM assets WHERE ` + filter + ` ORDER BY id`, args})
 	case "snapshots":
 		headers = []string{"资产编号", "资产名称", "日期", "金额(原币种主单位)", "持有数量", "币种", "年化(%)", "行情日期", "来源", "获取时间"}
 		queries = append(queries, exportQuery{`SELECT s.asset_id,a.name,s.snapshot_date,s.amount,s.quantity,s.currency,s.annual_rate,s.price_date,s.source,s.fetched_at FROM asset_daily_snapshots s JOIN assets a ON a.id=s.asset_id AND a.user_id=s.user_id WHERE s.user_id=? AND a.id IN (SELECT id FROM assets WHERE ` + filter + `)`, append([]any{userID}, args...)})

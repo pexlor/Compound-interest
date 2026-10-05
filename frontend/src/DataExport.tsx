@@ -8,7 +8,7 @@ type ExportAsset = { id: number; name: string; code: string | null };
 // DataExportProps 提供已登录资产列表与关闭弹窗回调。
 type DataExportProps = { assets: ExportAsset[]; onClose: () => void };
 const choices: { key: ExportDataset; title: string; description: string }[] = [
-  { key: 'assets', title: '资产清单', description: '当前金额、份额、币种、定投设置和备注' },
+  { key: 'assets', title: '资产清单', description: '当前金额、份额、币种和备注' },
   { key: 'prices', title: '股票 / 基金历史行情', description: '每日价格、复权价格或累计净值、货币基金收益' },
   { key: 'returns', title: '历史年化结果', description: '各计算日的 1 / 3 / 5 / 10 年测试结果' },
   { key: 'snapshots', title: '资产每日快照', description: '各资产每天记录的金额、份额和年化' },

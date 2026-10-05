@@ -27,10 +27,10 @@ test('monthly savings add principal while only existing assets compound',()=>{
  assert.equal(result.savingsContribution,12000);
  assert.equal(result.forecast,23000);
 });
-test('future fund contributions add principal without investment returns',()=>{
+test('legacy fund schedules do not add future contributions',/* 验证历史定投设置不再增加预测金额，现有资产仍计息。 */ ()=>{
  const a=[{category:'fund',code:'016452',amount:10000,currency:'CNY',annual_rate:10,investment_strategy:'monthly',investment_amount:1000}];
  const result=calculatePortfolio(a,{CNY:1},1,new Date('2026-01-01T00:00:00Z'));
- assert.equal(result.forecast,23000);
+ assert.equal(result.forecast,11000);
 });
 test('missing proceeds exchange rate prevents an incomplete forecast',/* 验证预测区间内缺失现金流汇率时不返回不完整预测。 */ ()=>{
  assert.equal(calculatePortfolio(assets,{CNY:1},1,new Date('2026-01-01T00:00:00Z'),0,[{date:'2026-04-15',amount:100,currency:'USD'}]),null);

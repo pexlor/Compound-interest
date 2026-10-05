@@ -21,7 +21,7 @@ CLI 只能通过 HTTP 访问本服务。默认部署入口是 `http://localhost:
 ## 单位与日期
 
 - 写入金额参数使用主货币单位：`amount: 100` 表示 100 元/美元等。
-- 资产 `amount`、`investment_amount`、工资/储蓄/奖金及退休目标响应金额均为整数分；新增响应标注 `moneyUnit: "minor"`。期权每份 `strikePrice`、`marketPrice` 在请求和响应中均为所选币种的主单位，详见 [收入到账与退休预测](compensation.md)。
+- 资产 `amount`、工资/储蓄/奖金及退休目标响应金额均为整数分；新增响应标注 `moneyUnit: "minor"`。期权每份 `strikePrice`、`marketPrice` 在请求和响应中均为所选币种的主单位，详见 [收入到账与退休预测](compensation.md)。
 - 总览使用 `totalCnyMinor` / `valueCnyMinor`，单位是人民币分；`share` 为 0–1 的比例。
 - `annualRate` 写入值为百分数，`2` 表示 2%；这是预测假设，不是真实个人投资收益。
 - 日期筛选采用 `YYYY-MM-DD`，资产历史为 Asia/Shanghai 的业务日期。
@@ -59,8 +59,8 @@ CLI 只能通过 HTTP 访问本服务。默认部署入口是 `http://localhost:
 
 | 方法与路径 | 请求字段 | 返回与行为 |
 |---|---|---|
-| `POST /api/assets` | 必填 name、category、amount；currency 默认 CNY；可选 code、quantity、annualRate、note、investmentStrategy、investmentAmount | 201；asset、before/after、snapshot、dryRun |
-| `PATCH /api/assets` | id、version；可选 name、note、amount、quantity、currency、annualRate、investmentStrategy、investmentAmount | 200；before/after，更新后的完整资产在 after 中 |
+| `POST /api/assets` | 必填 name、category、amount；currency 默认 CNY；可选 code、quantity、annualRate、note | 201；asset、before/after、snapshot、dryRun |
+| `PATCH /api/assets` | id、version；可选 name、note、amount、quantity、currency、annualRate | 200；before/after，更新后的完整资产在 after 中 |
 | `POST /api/assets/archive` | id、version | 200；保留原资产，记录 archived_at；后续当前总览、行情刷新、退休计算及快照排除它 |
 | `PATCH /api/income` | version；可选 monthlySalary、monthlySavings、annualBonus、bonusSettings、options | 200；只修改指定字段，零值合法 |
 | `POST /api/retirement` | name、amount；可选 category、currency（默认 CNY） | 201；新增目标明细，返回退休汇总和 before/after |
@@ -69,9 +69,9 @@ CLI 只能通过 HTTP 访问本服务。默认部署入口是 `http://localhost:
 | `POST /api/valuations/refresh` | `{}` | 200；updated、errors、complete、snapshotRecorded、before/after、dryRun |
 | `POST /api/history` | `{}` | 200；按当前已保存市值记录当天历史，不抓取行情；支持预览及防重复 |
 
-资产类别为 stock、fund、money、deposit、housing、fixed。stock/fund 必须带非空证券代码与大于零的 quantity。金额大于零，至少 0.01；收入字段可为零。支持的币种为 CNY、USD、HKD、EUR、JPY、GBP、SGD、AUD、CAD、CHF。
+定投功能已移除，资产接口不再接受 investmentStrategy、investmentAmount，也不返回对应字段。旧数据库字段仅保留用于历史备份兼容。
 
-基金定投策略为 none、daily、weekly、monthly、yearly；非 none 仅适用于 fund，必须具有有效 investmentAmount。关闭策略会清除计划金额。保存定投策略不代表已经扣款或买入。
+资产类别为 stock、fund、money、deposit、housing、fixed。stock/fund 必须带非空证券代码与大于零的 quantity。金额大于零，至少 0.01；收入字段可为零。支持的币种为 CNY、USD、HKD、EUR、JPY、GBP、SGD、AUD、CAD、CHF。
 
 估值刷新获取行情后再提交事务。如果期间持仓版本改变或归档，返回 version_conflict，不应用那次刷新。部分行情失败时保留失败资产原估值，响应 complete 为 false，并在 errors 逐项说明；成功项目仍可写入。snapshotRecorded 为 false 时不能宣称历史已记录，通常是缺失汇率。重试已成功请求直接返回原响应，不重新获取行情。
 

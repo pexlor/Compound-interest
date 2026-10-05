@@ -1,4 +1,4 @@
-// 资产接口测试：覆盖部分更新、幂等重放、归档、定投与金额校验。
+// 资产接口测试：覆盖部分更新、幂等重放、归档、已移除字段与金额校验。
 
 package httpapi
 
@@ -102,18 +102,18 @@ func TestAssetsAPIPartialUpdatesReplayAndArchive(t *testing.T) {
 	}
 }
 
-// TestAssetsAPIInvestmentAndValidation 验证资产定投设置和字段校验规则。
-func TestAssetsAPIInvestmentAndValidation(t *testing.T) {
+// TestAssetsAPIValidation 验证已移除字段被拒绝及常规字段校验规则。
+func TestAssetsAPIValidation(t *testing.T) {
 	db, h, c := apiFixture(t)
 	tok := issueToken(t, h, c, "write")
 	if _, err := db.Exec(`INSERT INTO assets(id,user_id,name,category,code,amount,quantity,currency) VALUES(1,1,'fund','fund','000001',10000,100,'CNY'),(2,2,'other','deposit',NULL,1000,NULL,'CNY')`); err != nil {
 		t.Fatal(err)
 	}
 	status, v := requestAPI(t, h, nil, tok, "PATCH", "/api/assets", `{"id":1,"version":1,"investmentStrategy":"monthly","investmentAmount":1000}`, "investment")
-	if status != 200 {
-		t.Fatalf("independent investment %d %v", status, v)
+	if status != 400 {
+		t.Fatalf("removed investment accepted %d %v", status, v)
 	}
-	for i, payload := range []string{`{"id":1,"version":2,"quantity":-1}`, `{"id":1,"version":2,"currency":"ZZZ"}`, `{"id":1,"version":2,"note":null}`, `{"id":1,"version":2}`, `{"id":1,"version":2,"amount":0}`, `{"id":1,"version":2,"unknown":1}`, `{"id":1,"version":2,"note":"x"} {}`} {
+	for i, payload := range []string{`{"id":1,"version":1,"quantity":-1}`, `{"id":1,"version":1,"currency":"ZZZ"}`, `{"id":1,"version":1,"note":null}`, `{"id":1,"version":1}`, `{"id":1,"version":1,"amount":0}`, `{"id":1,"version":1,"unknown":1}`, `{"id":1,"version":1,"note":"x"} {}`} {
 		status, _ = requestAPI(t, h, nil, tok, "PATCH", "/api/assets", payload, "invalid"+strconv.Itoa(i))
 		if status != 400 {
 			t.Fatalf("invalid %s = %d", payload, status)
@@ -127,8 +127,35 @@ func TestAssetsAPIInvestmentAndValidation(t *testing.T) {
 	if status != 400 {
 		t.Fatalf("missing version: %d", status)
 	}
-	status, _ = requestAPI(t, h, nil, tok, "PATCH", "/api/assets", `{"id":1,"version":2,"note":"x"}`, "")
+	status, _ = requestAPI(t, h, nil, tok, "PATCH", "/api/assets", `{"id":1,"version":1,"note":"x"}`, "")
 	if status != 400 {
 		t.Fatalf("missing key: %d", status)
+	}
+}
+
+// TestAssetsAPILegacyInvestment 验证旧记录可以读取和更新，但不再暴露或接受定投设置。
+func TestAssetsAPILegacyInvestment(t *testing.T) {
+	db, h, c := apiFixture(t)
+	tok := issueToken(t, h, c, "write")
+	if _, err := db.Exec(`INSERT INTO assets(id,user_id,name,category,code,amount,quantity,currency,investment_strategy,investment_amount) VALUES(1,1,'fund','fund','000001',10000,100,'CNY','monthly',1000)`); err != nil {
+		t.Fatal(err)
+	}
+	status, v := requestAPI(t, h, nil, tok, "GET", "/api/assets?id=1", "", "")
+	if status != 200 {
+		t.Fatal(status, v)
+	}
+	a := v["asset"].(map[string]any)
+	for _, key := range []string{"investment_strategy", "investment_amount"} {
+		if _, exists := a[key]; exists {
+			t.Fatalf("legacy field exposed: %s", key)
+		}
+	}
+	status, v = requestAPI(t, h, nil, tok, "PATCH", "/api/assets", `{"id":1,"version":1,"note":"updated"}`, "legacy-update")
+	if status != 200 {
+		t.Fatal(status, v)
+	}
+	status, v = requestAPI(t, h, nil, tok, "POST", "/api/assets", `{"name":"fund","category":"fund","code":"000001","amount":100,"quantity":100,"currency":"CNY","investmentStrategy":"monthly","investmentAmount":10}`, "removed-create")
+	if status != 400 {
+		t.Fatal(status, v)
 	}
 }

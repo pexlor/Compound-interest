@@ -52,6 +52,9 @@ func TestExportCSVIsolationAndUnits(t *testing.T) {
 	if len(records) != 2 || !strings.Contains(w.Body.String(), "123.45") || strings.Contains(w.Body.String(), "private") || strings.Contains(w.Body.String(), "archived") {
 		t.Fatal(records)
 	}
+	if strings.Contains(strings.Join(records[0], ","), "定投") || len(records[0]) != 11 {
+		t.Fatal("removed fields in export", records[0])
+	}
 	if records[1][1] != "'=danger,\"quoted\"" || !strings.Contains(w.Body.String(), "line1\nline2") {
 		t.Fatal(records)
 	}

@@ -108,7 +108,7 @@ func TestCLIAPIHTTPWorkflow(t *testing.T) {
 func TestCLIAPICookieAssetWorkflow(t *testing.T) {
 	_, h, c := apiFixture(t)
 	// Exercises the current webpage contract with explicit keys and versions.
-	status, v := requestAPI(t, h, c, "", "POST", "/api/assets", `{"name":"存款","category":"deposit","code":"","amount":100,"currency":"CNY","annualRate":2,"note":"","investmentStrategy":"none"}`, "create")
+	status, v := requestAPI(t, h, c, "", "POST", "/api/assets", `{"name":"存款","category":"deposit","code":"","amount":100,"currency":"CNY","annualRate":2,"note":""}`, "create")
 	if status != 201 {
 		t.Fatalf("create %d %v", status, v)
 	}
