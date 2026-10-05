@@ -7,7 +7,7 @@ import { IncomePlanner } from "./IncomePlanner";
 import type { IncomeSettings, IncomeInput } from "./income";
 
 import { FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { calculatePortfolio, calculatePortfolioSeries } from "./portfolio";
+import { calculateMonthEndGrowth, calculatePortfolio, calculatePortfolioSeries } from "./portfolio";
 import { exchangePairs } from "./exchange-rates";
 import { mutationHeaders } from "./mutations";
 import { mergeMarketResults, missingMarketRates, needsMarketRate, shouldApplyMarketResponse } from "./market-cache";
@@ -325,6 +325,7 @@ export default function Dashboard() {
   // Avoid Array.prototype.at(): some Chromium-based browsers still in use do not support it.
   const portfolio = portfolioSeries?.[portfolioSeries.length - 1] ?? null;
   const currentPortfolio = useMemo(/* 缓存当前资产汇总和加权收益率。 */ () => calculatePortfolio(displayAssets, exchangeRates, 0), [displayAssets, exchangeRates]);
+  const monthlyGrowth = useMemo(/* 独立计算本月剩余增长，不随长期预测年限变化。 */ () => calculateMonthEndGrowth(displayAssets, exchangeRates, new Date(`${income.forecast_as_of}T00:00:00Z`), income.monthly_savings, income.cashflows), [displayAssets, exchangeRates, income]);
   const missingForecastExchangeRate = missingExchangeRate || portfolioSeries === null;
   const total = currentPortfolio?.total ?? 0;
   const forecast = portfolio?.forecast ?? 0;
@@ -604,7 +605,7 @@ export default function Dashboard() {
             <div className="total-card-main">
               <div className="total-card-amount">
                 <div className="total-value">{missingExchangeRate ? "行情或汇率暂不可用" : money(total)}</div>
-                <div className="change-row"><span className="change-pill">汇率折算</span><span>本月预估增长 {missingForecastExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : money(expectedGain / Math.max(1, horizon * 12))}</span></div>
+                <div className="change-row"><span className="change-pill">汇率折算</span><span title={monthlyGrowth && !missingHistoricalRates ? `${income.forecast_as_of} 至 ${monthlyGrowth.endDate}：现有资产预估收益 ${money(monthlyGrowth.investmentGain)} + 本月预计到账本金 ${money(monthlyGrowth.savingsContribution)}（储蓄、奖金、期权）；历史年化用于估算，已到账收入不重复计入。` : undefined}>本月剩余预估增长 {monthlyGrowth === null ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : money(monthlyGrowth.expectedGain)}</span></div>
               </div>
               <aside className="exchange-panel" aria-label="人民币、美元、港元双向汇率" aria-live="polite">
                 <span className="exchange-panel-title">{exchangeDate && !exchangeOutdated ? "今日汇率" : "最新可用汇率"}</span>

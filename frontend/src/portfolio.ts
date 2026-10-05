@@ -31,6 +31,31 @@ function prepareInvestments(assets: PortfolioAsset[], rates: Partial<Record<stri
   }));
 }
 
+// calculateMonthEndGrowth 按预测基准日到本月底的剩余天数估算现有资产收益，只计基准日之后本月到账的本金。
+export function calculateMonthEndGrowth(
+  assets: PortfolioAsset[],
+  rates: Partial<Record<string, number>>,
+  asOf: Date,
+  monthlySavings = 0,
+  cashflows: Cashflow[] = [],
+) {
+  if (!Number.isFinite(asOf.getTime()) || !preparePortfolio(assets, rates, asOf)) return null;
+  const end = new Date(Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth() + 1, 0));
+  const daysRemaining = Math.max(0, (end.getTime() - asOf.getTime()) / 86400000);
+  const daysInYear = (Date.UTC(asOf.getUTCFullYear() + 1, 0, 1) - Date.UTC(asOf.getUTCFullYear(), 0, 1)) / 86400000;
+  const incoming = cashflows.filter(/* 仅本月基准日之后到账的奖金、期权等现金流参与剩余增长。 */ event => {
+    const date = new Date(`${event.date}T00:00:00Z`);
+    return date > asOf && date <= end;
+  });
+  if (incoming.some(/* 本月到账外币缺失有效汇率时不返回不完整金额。 */ event => !Number.isFinite(rates[event.currency]) || (rates[event.currency] ?? 0) <= 0)) return null;
+  const investmentGain = prepareInvestments(assets, rates).reduce(/* 将各资产有效年化收益率按剩余天数折算，未来新增资金不计收益。 */ (sum, investment) =>
+    sum + investment.initial * (Math.pow(1 + investment.rate, daysRemaining / daysInYear) - 1), 0);
+  if (!Number.isFinite(investmentGain)) return null;
+  const savingsContribution = (end > asOf ? Math.max(0, monthlySavings) : 0)
+    + incoming.reduce(/* 按实际本月到账日期筛选后的现金流换算人民币本金。 */ (sum, event) => sum + event.amount * (rates[event.currency] ?? 0), 0);
+  return { investmentGain, savingsContribution, expectedGain: investmentGain + savingsContribution, endDate: end.toISOString().slice(0, 10) };
+}
+
 // calculateForecast 计算给定年限后的资产预测值和收益构成。
 function calculateForecast(prepared: ReturnType<typeof preparePortfolio> & object, investments: PreparedInvestment[], horizon: number, monthlySavings: number, cashflows: Cashflow[], rates: Partial<Record<string, number>> = {}) {
   const end = new Date(prepared.asOf); end.setUTCFullYear(end.getUTCFullYear() + horizon);
