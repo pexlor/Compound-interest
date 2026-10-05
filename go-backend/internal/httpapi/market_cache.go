@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"fulibu-go/internal/service"
 )
 
 var marketIntervals = []int{365, 1095, 1825, 3650}
@@ -95,7 +97,7 @@ func (c *marketCache) read(cat, code string, days int) (marketResult, bool) {
 	var failure string
 	err := c.db.QueryRow(`SELECT r.payload,r.input_version,s.input_version,s.last_error FROM market_return_cache r JOIN market_sync_state s ON s.category=r.category AND s.code=r.code WHERE r.category=? AND r.code=? AND r.lookback_days=? ORDER BY r.calculation_date DESC LIMIT 1`, cat, code, days).Scan(&payload, &version, &current, &failure)
 	var result marketResult
-	if err != nil || json.Unmarshal([]byte(payload), &result) != nil || !result.AnnualReady {
+	if err != nil || json.Unmarshal([]byte(payload), &result) != nil || !result.AnnualReady || (cat == "fund" && result.ReturnMethod != "total-return-v2") {
 		return result, false
 	}
 	result.Stale = result.CalculationDate != marketDate() || version != current || failure != ""
@@ -316,14 +318,14 @@ func (c *marketCache) calculate(ctx context.Context, cat, code string, intervals
 		return err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT price_date,return_price,income,annual_rate FROM market_daily_prices WHERE category=? AND code=? ORDER BY price_date`, cat, code)
+	rows, err := tx.QueryContext(ctx, `SELECT price_date,price,return_price,income,annual_rate FROM market_daily_prices WHERE category=? AND code=? ORDER BY price_date`, cat, code)
 	if err != nil {
 		return err
 	}
 	points := []dailyObservation{}
 	for rows.Next() {
 		var p dailyObservation
-		if err = rows.Scan(&p.Date, &p.ReturnPrice, &p.Income, &p.AnnualRate); err != nil {
+		if err = rows.Scan(&p.Date, &p.Price, &p.ReturnPrice, &p.Income, &p.AnnualRate); err != nil {
 			rows.Close()
 			return err
 		}
@@ -336,6 +338,19 @@ func (c *marketCache) calculate(ctx context.Context, cat, code string, intervals
 	}
 	if len(points) < 2 {
 		return fmt.Errorf("历史不足两个数据点")
+	}
+	if cat == "fund" {
+		raw := make([]service.PriceObservation, len(points))
+		for i, p := range points {
+			raw[i] = service.PriceObservation{Date: p.Date, Price: p.Price, TotalPrice: p.ReturnPrice}
+		}
+		adjusted, e := service.FundTotalReturn(raw)
+		if e != nil {
+			return e
+		}
+		for i, p := range adjusted {
+			points[i].ReturnPrice = p.TotalPrice
+		}
 	}
 	var inception bool
 	var version int
@@ -399,7 +414,7 @@ func (c *marketCache) calculate(ctx context.Context, cat, code string, intervals
 		if math.IsNaN(rate) || math.IsInf(rate, 0) {
 			return fmt.Errorf("年化结果无效")
 		}
-		result := marketResult{Category: cat, Code: code, AnnualRate: rate, AnnualReady: true, RequestedDays: days, ActualDays: actual, HistoryLimited: !found && cat != "money", StartDate: first.Date, EndDate: latest.Date, CalculationDate: marketDate(), CurrentPrice: price, PriceCurrency: currency, PriceDate: priceDate, Source: source, FetchedAt: fetched}
+		result := marketResult{ReturnMethod: "total-return-v2", Category: cat, Code: code, AnnualRate: rate, AnnualReady: true, RequestedDays: days, ActualDays: actual, HistoryLimited: !found && cat != "money", StartDate: first.Date, EndDate: latest.Date, CalculationDate: marketDate(), CurrentPrice: price, PriceCurrency: currency, PriceDate: priceDate, Source: source, FetchedAt: fetched}
 		payload, _ := json.Marshal(result)
 		now := cacheTime()
 		_, e := tx.ExecContext(ctx, `INSERT INTO market_returns(category,code,lookback_days,calculation_date,annual_rate,period_return,requested_days,actual_days,history_limited,start_date,end_date,source,calculated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(category,code,lookback_days,calculation_date) DO UPDATE SET annual_rate=excluded.annual_rate,period_return=excluded.period_return,actual_days=excluded.actual_days,history_limited=excluded.history_limited,start_date=excluded.start_date,end_date=excluded.end_date,source=excluded.source,calculated_at=excluded.calculated_at`, cat, code, days, result.CalculationDate, rate, (endPrice/startPrice-1)*100, days, actual, result.HistoryLimited, first.Date, latest.Date, source, now)

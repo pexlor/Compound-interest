@@ -31,6 +31,7 @@ type marketResult struct {
 	PriceDate       string  `json:"priceDate,omitempty"`
 	Source          string  `json:"source"`
 	Stale           bool    `json:"stale,omitempty"`
+	ReturnMethod    string  `json:"returnMethod,omitempty"`
 	AnnualReady     bool    `json:"annualReady"`
 	Pending         bool    `json:"pending,omitempty"`
 	FetchedAt       string  `json:"fetchedAt,omitempty"`

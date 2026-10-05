@@ -198,3 +198,19 @@ func TestIncrementalAdjustmentChangeRefreshesFullHistory(t *testing.T) {
 		t.Fatalf("wrong revised return %+v", r)
 	}
 }
+
+// TestFundCacheUsesPeriodTotalReturn 验证有区间前分红时缓存年化按本期实际总收益计算。
+func TestFundCacheUsesPeriodTotalReturn(t *testing.T) {
+	db, _, _ := apiFixture(t)
+	db.Exec(`INSERT INTO market_daily_prices(category,code,price_date,price,return_price,currency,source,fetched_at) VALUES('fund','021000','2025-10-04',1,1.5,'CNY','test','now'),('fund','021000','2026-10-04',1.1,1.6,'CNY','test','now')`)
+	db.Exec(`INSERT INTO market_sync_state(category,code,inception_known) VALUES('fund','021000',1)`)
+	db.Exec(`INSERT INTO market_quotes(category,code,price,currency,price_date,source,fetched_at) VALUES('fund','021000',1.1,'CNY','2026-10-04','test','now')`)
+	c := marketCacheFor(db)
+	if err := c.calculate(context.Background(), "fund", "021000", []int{365}); err != nil {
+		t.Fatal(err)
+	}
+	r, ok := c.read("fund", "021000", 365)
+	if !ok || r.AnnualRate < 9.99 || r.AnnualRate > 10.02 {
+		t.Fatalf("wrong return %+v", r)
+	}
+}
