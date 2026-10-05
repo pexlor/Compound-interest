@@ -384,3 +384,18 @@ footer b { color: #5b6961; }
 .upcoming-income ul { list-style: none; padding: 0; margin: 0; }
 .upcoming-income li { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; border-top: 1px solid var(--line); padding: 8px 0; font-size: 12px; }
 @media (max-width: 500px) { .income-planner > .planner-grid, .income-planner .planner-grid { grid-template-columns: 1fr; } .income-planner fieldset { padding: 10px; } }
+
+/* 数据导出：复用现有弹窗风格，兼容手机和键盘操作。 */
+.export-form { display: grid; gap: 18px; }
+.export-form fieldset { border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 0; min-width: 0; }
+.export-form legend { font-size: 12px; color: var(--muted); padding: 0 5px; }
+.export-choice { display: flex; align-items: flex-start; gap: 10px; padding: 8px 2px; font-size: 13px; cursor: pointer; }
+.export-choice input { width: 16px; height: 16px; margin: 2px 0 0; flex: 0 0 auto; accent-color: var(--green); }
+.export-choice strong, .export-choice small { display: block; }
+.export-choice small { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+.export-assets { max-height: 180px; overflow-y: auto; border-top: 1px solid var(--line); margin-top: 6px; }
+.export-dates label { display: grid; gap: 7px; font-size: 12px; color: var(--muted); min-width: 0; }
+.export-dates input { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 9px; padding: 10px; background: #fbfcfb; color: var(--ink); }
+.export-hint { color: var(--muted); font-size: 11px; line-height: 1.7; margin: 0; }
+.export-error { color: #b63d35; background: #fff1ef; border-radius: 8px; padding: 10px; font-size: 12px; margin: 0; }
+@media (max-width: 600px) { .export-modal { padding: 28px 20px; } .header-actions { gap: 6px; } }

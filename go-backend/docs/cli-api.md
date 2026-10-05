@@ -115,3 +115,19 @@ curl -X PATCH "$FULIBU_BASE_URL/api/assets" \
 | 500 | internal_error | 服务端失败，不推断写入成功 |
 
 部分既有认证、行情及汇率错误仍采用 `{ "error": "…" }`，客户端需要按 HTTP 状态兜底。
+
+## 数据导出
+
+`GET /api/export` 允许 Cookie 或 read/write Bearer 令牌，只读取已保存的数据，不刷新行情或改写账本。
+
+| 参数 | 说明 |
+|---|---|
+| `datasets` | 必填，逗号分隔：`assets` 当前资产、`prices` 股票/基金日行情、`returns` 历史年化、`snapshots` 资产每日快照、`rates` 汇率历史 |
+| `assetIds` | 可选，逗号分隔本人资产编号；省略表示全部当前资产。非法或其他用户编号不会返回数据 |
+| `from` / `to` | 可选 `YYYY-MM-DD`，含两端，只过滤历史数据；资产清单始终是当前状态 |
+| `format` | 单类默认 `csv`，多类默认 `zip`；多类不能使用 `csv` |
+| `includeArchived` | 默认 `false`；`true` 可包含本人的已归档资产 |
+
+股票/基金行情和年化按所选资产关联证券去重。汇率仅包含这些资产币种；快照按用户及资产隔离。CSV 带 UTF-8 BOM 和中文表头；金额为原币种主单位，利率为百分数，空历史保留表头。ZIP 每类一份 CSV，附行数及单位说明。表格导入时将证券代码列设为文本以保留前导零。
+
+例：`/api/export?datasets=assets,prices&assetIds=1,2&from=2026-01-01&to=2026-10-05` 下载 ZIP。客户端按 `Content-Disposition` 保存二进制响应，错误仍为 JSON。导出大小上限 64 MiB，超出时缩小资产或日期范围。

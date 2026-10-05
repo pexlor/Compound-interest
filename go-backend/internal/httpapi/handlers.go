@@ -48,6 +48,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/auth/me", a.me)
 	mux.HandleFunc("/api/auth/tokens", a.apiTokens)
 	mux.HandleFunc("/api/assets", a.assets)
+	mux.HandleFunc("/api/export", a.exportData)
 	mux.HandleFunc("/api/assets/archive", a.archiveAsset)
 	mux.HandleFunc("/api/income", a.income)
 	mux.HandleFunc("/api/retirement", a.retirement)

@@ -2,6 +2,7 @@
 
 "use client";
 
+import { DataExport } from "./DataExport";
 import { IncomePlanner } from "./IncomePlanner";
 import type { IncomeSettings, IncomeInput } from "./income";
 
@@ -174,6 +175,7 @@ export default function Dashboard() {
   const marketRequestGeneration = useRef(0);
   activeMarketDays.current = lookback * 365;
   const [modalOpen, setModalOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [updating, setUpdating] = useState(false);
@@ -213,8 +215,9 @@ export default function Dashboard() {
     }
   }, []);
 
-  useEffect(/* 首次挂载时读取仪表盘数据，恢复登录态、持仓、收入和汇率。 */ () => {
-    fetch("/api/dashboard")
+  useEffect(/* 首次挂载及登录身份变化时读取仪表盘，清理旧请求以避免迟到响应覆盖。 */ () => {
+    const controller = new AbortController();
+    fetch("/api/dashboard", { signal: controller.signal })
       .then(/* 校验仪表盘接口状态并解析返回数据，未登录时返回空结果。 */ async (response) => {
         if (response.status === 401) return null;
         const data = await response.json() as /* 定义仪表盘接口返回的用户、持仓、历史、收入和汇率数据。 */ {
@@ -225,7 +228,7 @@ export default function Dashboard() {
         return data;
       })
       .then(/* 把仪表盘响应写入界面状态，并继续读取退休计划。 */ (dashboard) => {
-        if (!dashboard) return;
+        if (!dashboard || controller.signal.aborted) return;
         setUser(dashboard.user ?? null);
         setAssets(dashboard.assets ?? []);
         setMarketRates(mergeMarketResults({}, dashboard.marketResults ?? [], 1095));
@@ -236,12 +239,14 @@ export default function Dashboard() {
         setExchangeStale(Boolean(dashboard.stale));
         void fetch("/api/retirement").then(/* 仅在接口成功时解析退休计划数据。 */ (response) => response.ok ? response.json() as Promise<Retirement> : null).then(/* 读取到有效退休计划后更新界面状态。 */ (goal) => { if (goal) setRetirement(goal); });
       })
-      .catch(/* 读取失败时清除登录态，让界面回到登录入口。 */ () => setUser(null))
+      .catch(/* 仅处理仍有效的读取失败，取消的旧请求不改变登录态。 */ () => { if (!controller.signal.aborted) setUser(null); })
       .finally(/* 读取失败时清除登录态，让界面回到登录入口。 */ () => {
+        if (controller.signal.aborted) return;
         setAssetsLoading(false);
         setAuthLoading(false);
       });
-  }, []);
+    return /* 登录状态变化或卸载时取消旧的仪表盘请求。 */ () => controller.abort();
+  }, [user?.id]);
 
   // saveRetirement 提交一项新的退休目标资产。
   async function saveRetirement(event: FormEvent<HTMLFormElement>) {
@@ -568,9 +573,12 @@ export default function Dashboard() {
         </nav>
         <div className="header-actions">
           <div className="user-chip"><span className="avatar">{user.displayName.slice(0, 1)}</span><span className="user-meta"><strong>{user.displayName}</strong><small>{user.email}</small></span></div>
+          <button className="logout-button" onClick={/* 打开数据导出选择窗口。 */ () => setExportOpen(true)}>数据导出</button>
           <button className="logout-button" onClick={logout}>退出</button>
         </div>
       </header>
+
+      {exportOpen && <DataExport assets={assets} onClose={/* 关闭数据导出窗口。 */ () => setExportOpen(false)} />}
 
       <section className="content" id="top">
         <div className="welcome-row">
