@@ -558,7 +558,7 @@ export default function Dashboard() {
         <div className="welcome-row">
           <div>
             <p className="eyebrow">{new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })} · 资产总览</p>
-            <h1>{user.displayName}，看看财富生长到哪里了。</h1>
+            <h1>{user.displayName}，看看财富生长到哪里了</h1>
           </div>
           <button className="primary-button" onClick={/* 更新新增资产弹窗的显示状态。 */ () => setModalOpen(true)}><span>＋</span> 记录资产</button>
         </div>
