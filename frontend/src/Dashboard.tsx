@@ -150,6 +150,17 @@ function StarMapMark() {
 
 // Dashboard 承载资产星图的登录态、资产、预测和退休目标界面。
 export default function Dashboard() {
+  const [activeNav, setActiveNav] = useState(window.location.hash || "#overview");
+  useEffect(/* 同步锚点导航与浏览器前进、后退，让下划线跟随当前导航项。 */ () => {
+    // syncNavigation 将首页或未知锚点归到总览，其余锚点对应各导航项。
+    function syncNavigation() {
+      const hash = window.location.hash;
+      setActiveNav(["#assets", "#forecast", "#history"].includes(hash) ? hash : "#overview");
+    }
+    syncNavigation();
+    window.addEventListener("hashchange", syncNavigation);
+    return /* 卸载时移除锚点监听，避免重复更新。 */ () => window.removeEventListener("hashchange", syncNavigation);
+  }, []);
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [assetsLoading, setAssetsLoading] = useState(false);
@@ -562,10 +573,10 @@ export default function Dashboard() {
           <StarMapMark /><span>资产星图</span>
         </a>
         <nav aria-label="主要导航">
-          <a className="nav-active" href="#overview">总览</a>
-          <a href="#assets">资产</a>
-          <a href="#forecast">预测</a>
-          <a href="#history">历史</a>
+          <a className={activeNav === "#overview" ? "nav-active" : ""} aria-current={activeNav === "#overview" ? "location" : undefined} href="#overview" onClick={/* 点击时立即更新总览的选中状态。 */ () => setActiveNav("#overview")}>总览</a>
+          <a className={activeNav === "#assets" ? "nav-active" : ""} aria-current={activeNav === "#assets" ? "location" : undefined} href="#assets" onClick={/* 点击时立即更新资产的选中状态。 */ () => setActiveNav("#assets")}>资产</a>
+          <a className={activeNav === "#forecast" ? "nav-active" : ""} aria-current={activeNav === "#forecast" ? "location" : undefined} href="#forecast" onClick={/* 点击时立即更新预测的选中状态。 */ () => setActiveNav("#forecast")}>预测</a>
+          <a className={activeNav === "#history" ? "nav-active" : ""} aria-current={activeNav === "#history" ? "location" : undefined} href="#history" onClick={/* 点击时立即更新历史的选中状态。 */ () => setActiveNav("#history")}>历史</a>
         </nav>
         <div className="header-actions">
           <div className="user-chip"><span className="avatar">{user.displayName.slice(0, 1)}</span><span className="user-meta"><strong>{user.displayName}</strong><small>{user.email}</small></span></div>
