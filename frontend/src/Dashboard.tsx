@@ -5,10 +5,10 @@
 import { IncomePlanner } from "./IncomePlanner";
 import type { IncomeSettings, IncomeInput } from "./income";
 
-import { FormEvent, memo, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { calculatePortfolio, calculatePortfolioSeries } from "./portfolio";
 import { mutationHeaders } from "./mutations";
-import { mergeMarketResults, missingMarketRates, needsMarketRate } from "./market-cache";
+import { mergeMarketResults, missingMarketRates, needsMarketRate, shouldApplyMarketResponse } from "./market-cache";
 
 // Category 列出仪表盘支持的资产类别。
 type Category = "stock" | "fund" | "money" | "deposit" | "housing" | "fixed";
@@ -170,6 +170,9 @@ export default function Dashboard() {
   const [allocationMode, setAllocationMode] = useState<"category" | "asset">("category");
   const [horizon, setHorizon] = useState(3);
   const [lookback, setLookback] = useState(3);
+  const activeMarketDays = useRef(1095);
+  const marketRequestGeneration = useRef(0);
+  activeMarketDays.current = lookback * 365;
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -184,6 +187,7 @@ export default function Dashboard() {
 
   // loadMarketRates 拉取并缓存已持仓证券的行情与年化收益率。
   const loadMarketRates = useCallback(async (selectedLookback: number, notify = false, signal?: AbortSignal) => {
+    const requestGeneration = ++marketRequestGeneration.current;
     setSyncing(true);
     try {
       const response = await fetch(`/api/market?days=${selectedLookback * 365}${notify ? "&refresh=1" : ""}`, { signal });
@@ -193,6 +197,7 @@ export default function Dashboard() {
         return;
       }
       if (!response.ok) throw new Error(data.error || "读取市场收益失败");
+      if (!shouldApplyMarketResponse(selectedLookback * 365, activeMarketDays.current, requestGeneration, marketRequestGeneration.current)) return;
       setMarketRates(current => mergeMarketResults(current, data.results ?? [], selectedLookback * 365));
       setMarketPending((data.results ?? []).some(result => result.pending));
       setMarketChecked(true);
@@ -204,7 +209,7 @@ export default function Dashboard() {
       if (error instanceof DOMException && error.name === "AbortError") return;
       if (notify) setToast(error instanceof Error ? error.message : "读取市场收益失败");
     } finally {
-      if (!signal?.aborted) setSyncing(false);
+      if (!signal?.aborted && requestGeneration === marketRequestGeneration.current) setSyncing(false);
     }
   }, []);
 

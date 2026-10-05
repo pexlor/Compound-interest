@@ -107,3 +107,33 @@ func TestTencentSeriesSeparatesRawAndAdjustedPrices(t *testing.T) {
 		t.Fatalf("%+v %v", series, err)
 	}
 }
+
+func TestTencentYoungSecurityConfirmsAvailableHistoryStart(t *testing.T) {
+	first := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC).Unix()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/finance/chart/") {
+			fmt.Fprintf(w, `{"chart":{"result":[{"meta":{"firstTradeDate":%d}}]}}`, first)
+			return
+		}
+		if r.URL.Query().Get("q") != "" {
+			w.WriteHeader(502)
+			return
+		}
+		param := r.URL.Query().Get("param")
+		data := `[]`
+		if strings.Contains(param, "day,2026-") {
+			data = `[["2026-01-02","10","10"],["2026-10-02","12","12"]]`
+		}
+		if strings.HasSuffix(param, ",qfq") {
+			fmt.Fprintf(w, `{"code":0,"data":{"sh588999":{"qfqday":%s}}}`, data)
+		} else {
+			fmt.Fprintf(w, `{"code":0,"data":{"sh588999":{"day":%s}}}`, data)
+		}
+	}))
+	defer server.Close()
+	from, _ := time.Parse("2006-01-02", "2020-01-01")
+	series, err := fetchTencentSeries(context.Background(), &http.Client{Transport: quoteTransportForCache{server.URL}}, "fund", "SH588999", from)
+	if err != nil || !series.InceptionKnown {
+		t.Fatalf("young security lacks confirmed start: %+v %v", series, err)
+	}
+}

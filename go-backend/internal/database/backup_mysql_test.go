@@ -141,3 +141,32 @@ func TestBackupTargetRejectsIncompatibleStructure(t *testing.T) {
 		})
 	}
 }
+
+func TestBackupTargetAddsMarketTablesToOwnedLegacyTarget(t *testing.T) {
+	ctx := context.Background()
+	target := backupMySQLTestDB(t)
+	if err := InitializeBackupTarget(ctx, target, "source-market-upgrade", false); err != nil {
+		t.Fatal(err)
+	}
+	execBackupTest(t, target, `INSERT INTO exchange_rates(currency,cny_rate,rate_date,updated_at) VALUES('USD',7,'2026-10-04','before')`)
+	for _, table := range backupTables {
+		if isMarketCacheTable(table.name) {
+			execBackupTest(t, target, "DROP TABLE "+quoteIdent(table.name))
+		}
+	}
+	if err := InitializeBackupTarget(ctx, target, "source-market-upgrade", true); err != nil {
+		t.Fatal(err)
+	}
+	var rate float64
+	if err := target.QueryRow(`SELECT cny_rate FROM exchange_rates WHERE currency='USD'`).Scan(&rate); err != nil || rate != 7 {
+		t.Fatalf("legacy backup changed %v %v", rate, err)
+	}
+	for _, table := range backupTables {
+		if isMarketCacheTable(table.name) {
+			var n int
+			if err := target.QueryRow("SELECT COUNT(*) FROM " + quoteIdent(table.name)).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}

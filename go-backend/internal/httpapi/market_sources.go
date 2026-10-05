@@ -298,6 +298,14 @@ func fetchTencentSeries(ctx context.Context, client *http.Client, category, code
 	}
 	latest := series.Rows[len(series.Rows)-1]
 	series.Quote, series.QuoteDate = latest.Price, latest.Date
+	// Only a full range plus matching provider first-trade metadata confirms
+	// a young security. Empty earlier chunks alone could be source truncation.
+	if series.Rows[0].Date > from.AddDate(0, 0, 7).Format("2006-01-02") {
+		if first, err := fetchSecurityFirstTrade(ctx, client, symbol); err == nil {
+			oldest, _ := time.Parse("2006-01-02", series.Rows[0].Date)
+			series.InceptionKnown = !first.Before(from) && oldest.Sub(first) >= 0 && oldest.Sub(first) <= 7*24*time.Hour
+		}
+	}
 	if price, date, err := fetchTencentQuote(contextClient(ctx, client), symbol); err == nil {
 		series.Quote, series.QuoteDate = price, date
 	}
@@ -312,4 +320,52 @@ func fetchMarketSeries(ctx context.Context, client *http.Client, category, code 
 		return fetchFundNAVSeries(ctx, client, code, from, category == "money")
 	}
 	return fetchTencentSeries(ctx, client, category, code, from)
+}
+
+func fetchSecurityFirstTrade(ctx context.Context, client *http.Client, symbol string) (time.Time, error) {
+	ticker := ""
+	switch {
+	case strings.HasPrefix(symbol, "sh"):
+		ticker = symbol[2:] + ".SS"
+	case strings.HasPrefix(symbol, "sz"):
+		ticker = symbol[2:] + ".SZ"
+	case strings.HasPrefix(symbol, "hk"):
+		n, err := strconv.Atoi(symbol[2:])
+		if err != nil {
+			return time.Time{}, err
+		}
+		ticker = fmt.Sprintf("%04d.HK", n)
+	default:
+		return time.Time{}, fmt.Errorf("不支持的上市信息市场")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://query1.finance.yahoo.com/v8/finance/chart/"+url.PathEscape(ticker)+"?range=1mo&interval=1d", nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	res, err := client.Do(req)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return time.Time{}, fmt.Errorf("上市信息 HTTP %d", res.StatusCode)
+	}
+	var payload struct {
+		Chart struct {
+			Result []struct {
+				Meta struct {
+					FirstTradeDate int64 `json:"firstTradeDate"`
+				}
+			} `json:"result"`
+		} `json:"chart"`
+	}
+	if err = json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&payload); err != nil {
+		return time.Time{}, err
+	}
+	if len(payload.Chart.Result) != 1 || payload.Chart.Result[0].Meta.FirstTradeDate <= 0 {
+		return time.Time{}, fmt.Errorf("没有可验证的最早交易日期")
+	}
+	date := time.Unix(payload.Chart.Result[0].Meta.FirstTradeDate, 0).UTC().Format("2006-01-02")
+	return time.Parse("2006-01-02", date)
 }

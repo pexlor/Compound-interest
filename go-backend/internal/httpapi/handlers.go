@@ -56,6 +56,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/dashboard", a.dashboard)
 	mux.HandleFunc("/api/exchange-rates", a.rates)
 	mux.HandleFunc("/api/market", a.market)
+	mux.HandleFunc("/api/market/cache-status", a.marketCacheStatus)
 	mux.HandleFunc("/api/portfolio/summary", a.portfolioSummary)
 	mux.HandleFunc("/api/valuations/refresh", a.refreshValuations)
 	return a.headers(a.authorize(mux))

@@ -28,3 +28,7 @@ export function missingMarketRates(assets:Array<{category:string;code:string|nul
   return !value||value.annualReady!==true||value.requestedDays!==days||!Number.isFinite(value.annualRate);
  });
 }
+
+export function shouldApplyMarketResponse(responseDays:number,activeDays:number,responseGeneration:number,currentGeneration:number){
+ return responseDays===activeDays && responseGeneration===currentGeneration;
+}

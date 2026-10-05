@@ -196,6 +196,35 @@ func (c *marketCache) sync(ctx context.Context, cat, code string, force bool) er
 	if err != nil {
 		return err
 	}
+	if !fullSync && len(series.Rows) > 0 {
+		// A historical adjustment change in the overlap revises the basis of
+		// older prices too. Fetch the retained range before publishing returns.
+		newest := ""
+		for _, row := range series.Rows {
+			if row.Date > newest {
+				newest = row.Date
+			}
+		}
+		revised := false
+		for _, row := range series.Rows {
+			if row.Date >= newest {
+				continue
+			} // Today's unfinished close may fluctuate.
+			var previous float64
+			if c.db.QueryRowContext(ctx, `SELECT return_price FROM market_daily_prices WHERE category=? AND code=? AND price_date=?`, cat, code, row.Date).Scan(&previous) == nil && math.Abs(previous-row.ReturnPrice) > 1e-9*math.Max(1, math.Abs(previous)) {
+				revised = true
+				break
+			}
+		}
+		if revised {
+			fullSync = true
+			from = time.Now().UTC().AddDate(0, 0, -3695)
+			series, err = c.fetch(ctx, c.client, cat, code, from)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	if len(series.Rows) < 2 || !finitePositive(series.Quote) || !serviceCurrency(series.Currency) {
 		return fmt.Errorf("行情序列或报价无效")
 	}

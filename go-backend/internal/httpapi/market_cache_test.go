@@ -140,3 +140,54 @@ func TestChangedHistoryRecomputesEveryInterval(t *testing.T) {
 		}
 	}
 }
+
+func TestMarketCacheStatusReportsOnlyCurrentUserSecurities(t *testing.T) {
+	db, h, cookie := apiFixture(t)
+	db.Exec(`INSERT INTO assets(user_id,name,category,code,amount,currency) VALUES(1,'fund','fund','021000',10000,'CNY')`)
+	db.Exec(`INSERT INTO market_daily_prices(category,code,price_date,price,return_price,currency,source,fetched_at) VALUES('fund','021000','2026-10-04',2,2,'CNY','test','now'),('stock','PRIVATE', '2026-10-04',3,3,'CNY','test','now')`)
+	status, v := requestAPI(t, h, cookie, "", "GET", "/api/market/cache-status", "", "")
+	if status != 200 {
+		t.Fatalf("status %d %v", status, v)
+	}
+	securities := v["securities"].([]any)
+	if len(securities) != 1 || securities[0].(map[string]any)["dailyRows"] != float64(1) {
+		t.Fatal(v)
+	}
+}
+
+func TestIncrementalAdjustmentChangeRefreshesFullHistory(t *testing.T) {
+	db, _, _ := apiFixture(t)
+	c := marketCacheFor(db)
+	phase := 0
+	fullCalls := 0
+	recent := time.Now().UTC().AddDate(0, 0, -10).Format("2006-01-02")
+	latest := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	c.fetch = func(_ context.Context, _ *http.Client, _, _ string, from time.Time) (marketSeries, error) {
+		points := []dailyObservation{{Date: recent, Price: 100, ReturnPrice: 100}, {Date: latest, Price: 100, ReturnPrice: 100}}
+		if phase > 0 {
+			points[0].ReturnPrice = 50
+			points[1].ReturnPrice = 50
+		}
+		if from.Before(time.Now().AddDate(0, 0, -100)) {
+			fullCalls++
+			old := 100.0
+			if phase > 0 {
+				old = 50
+			}
+			points = append([]dailyObservation{{Date: "2015-01-01", Price: 100, ReturnPrice: old}}, points...)
+		}
+		return marketSeries{Rows: points, Currency: "CNY", Source: "test", InceptionKnown: true, Quote: 100, QuoteDate: latest}, nil
+	}
+	<-c.startSync("fund", "021000", false)
+	phase = 1
+	<-c.startSync("fund", "021000", false)
+	var oldest float64
+	db.QueryRow(`SELECT return_price FROM market_daily_prices WHERE price_date='2015-01-01'`).Scan(&oldest)
+	if fullCalls != 2 || oldest != 50 {
+		t.Fatalf("mixed adjustment basis: fullCalls=%d oldest=%v", fullCalls, oldest)
+	}
+	r, _ := c.read("fund", "021000", 1095)
+	if r.AnnualRate != 0 || r.Stale {
+		t.Fatalf("wrong revised return %+v", r)
+	}
+}
