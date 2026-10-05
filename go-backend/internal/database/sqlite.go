@@ -51,7 +51,7 @@ func Open(dataDir string) (*sql.DB, error) {
 			rows.Close()
 		}
 	}
-	if _, err = db.Exec(schema); err != nil {
+	if _, err = db.Exec(schema + marketCacheSchema); err != nil {
 		db.Close()
 		return nil, err
 	}

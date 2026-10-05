@@ -166,9 +166,9 @@ func mysqlBackupNullable(table backupTable, column string) bool {
 
 func mysqlBackupType(column string) string {
 	switch column {
-	case "id", "user_id", "password_iterations", "expires_at", "amount", "investment_amount", "version", "monthly_salary", "monthly_savings", "annual_bonus", "status", "total_cny", "lookback_days", "requested_days", "actual_days", "history_limited":
+	case "id", "user_id", "password_iterations", "expires_at", "amount", "investment_amount", "version", "monthly_salary", "monthly_savings", "annual_bonus", "status", "total_cny", "lookback_days", "requested_days", "actual_days", "history_limited", "asset_id", "inception_known", "input_version", "success_count", "failure_count":
 		return "BIGINT"
-	case "quantity", "annual_rate", "cny_rate", "period_return":
+	case "quantity", "annual_rate", "cny_rate", "period_return", "price", "return_price", "income":
 		return "DOUBLE"
 	case "email":
 		return "VARBINARY(2048)"
@@ -176,7 +176,7 @@ func mysqlBackupType(column string) string {
 		return "VARBINARY(512)"
 	case "code":
 		return "VARBINARY(1024)"
-	case "currency", "rate_date", "snapshot_date", "calculation_date":
+	case "currency", "rate_date", "snapshot_date", "calculation_date", "price_date", "run_date", "slot":
 		return "VARBINARY(64)"
 	default:
 		return "LONGTEXT"
