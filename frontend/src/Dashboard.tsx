@@ -8,6 +8,7 @@ import type { IncomeSettings, IncomeInput } from "./income";
 
 import { FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { calculatePortfolio, calculatePortfolioSeries } from "./portfolio";
+import { exchangePairs } from "./exchange-rates";
 import { mutationHeaders } from "./mutations";
 import { mergeMarketResults, missingMarketRates, needsMarketRate, shouldApplyMarketResponse } from "./market-cache";
 
@@ -192,6 +193,7 @@ export default function Dashboard() {
   const [exchangeDate, setExchangeDate] = useState("");
   const [exchangeLoading, setExchangeLoading] = useState(false);
   const [exchangeStale, setExchangeStale] = useState(false);
+  const exchangeOutdated = exchangeStale || Boolean(exchangeDate && exchangeDate !== new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" }));
 
   // loadMarketRates 拉取并缓存已持仓证券的行情与年化收益率。
   const loadMarketRates = useCallback(async (selectedLookback: number, notify = false, signal?: AbortSignal) => {
@@ -598,9 +600,20 @@ export default function Dashboard() {
 
         <section className="summary-grid" id="overview">
           <article className="total-card">
-            <div className="card-label"><span>总资产 · 折合人民币</span><button className={`exchange-status${exchangeStale ? " stale" : ""}`} onClick={refreshExchangeRates} disabled={exchangeLoading}>{exchangeLoading ? "正在读取汇率…" : exchangeDate ? `${exchangeDate} 汇率 · 读取缓存` : "读取汇率缓存"}</button></div>
-            <div className="total-value">{missingExchangeRate ? "行情或汇率暂不可用" : money(total)}</div>
-            <div className="change-row"><span className="change-pill">汇率折算</span><span>本月预估增长 {missingForecastExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : money(expectedGain / Math.max(1, horizon * 12))}</span></div>
+            <div className="card-label"><span>总资产 · 折合人民币</span><button className={`exchange-status${exchangeOutdated ? " stale" : ""}`} onClick={refreshExchangeRates} disabled={exchangeLoading}>{exchangeLoading ? "正在读取汇率…" : exchangeDate ? `${exchangeDate}${exchangeOutdated ? " · 旧数据" : ""} · 刷新汇率` : "读取汇率缓存"}</button></div>
+            <div className="total-card-main">
+              <div className="total-card-amount">
+                <div className="total-value">{missingExchangeRate ? "行情或汇率暂不可用" : money(total)}</div>
+                <div className="change-row"><span className="change-pill">汇率折算</span><span>本月预估增长 {missingForecastExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : money(expectedGain / Math.max(1, horizon * 12))}</span></div>
+              </div>
+              <aside className="exchange-panel" aria-label="人民币、美元、港元双向汇率" aria-live="polite">
+                <span className="exchange-panel-title">{exchangeDate && !exchangeOutdated ? "今日汇率" : "最新可用汇率"}</span>
+                {exchangePairs(exchangeRates).map(/* 展示每组货币的正向和反向汇率，缺失数据时显示等待状态。 */ ({ base, quote, forward, reverse }) => <div className="exchange-pair" key={`${base}-${quote}`}>
+                  <strong>{base === "HKD" ? "港元" : currencyMeta[base]} ↔ {quote === "HKD" ? "港元" : currencyMeta[quote]}</strong>
+                  {forward === null || reverse === null ? <span>等待汇率</span> : <><span>1 {base} = {forward.toFixed(4)} {quote}</span><span>1 {quote} = {reverse.toFixed(4)} {base}</span></>}
+                </div>)}
+              </aside>
+            </div>
             <div className="mini-stats">
               <div><span>可产生收益</span><strong>{missingExchangeRate ? "等待汇率" : money(total - (grouped.find(/* 查找固定资产分组，用于显示固定资产总额。 */ (g) => g.category === "fixed")?.amount || 0))}</strong></div>
               <div><span>组合预期年化（根据最近{lookback}年数据计算）</span><strong>{missingExchangeRate ? "等待汇率" : missingHistoricalRates ? forecastRateStatus : `${weightedRate.toFixed(2)}%`}</strong><small className="portfolio-rate-note">{limitedHistoryCount ? `其中 ${limitedHistoryCount} 项历史不足` : "\u00a0"}</small></div>

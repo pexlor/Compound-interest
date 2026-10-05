@@ -64,7 +64,15 @@ h2 { margin: 4px 0 0; font-family: Georgia, "Songti SC", serif; font-size: 25px;
 .exchange-status:hover { color: white; }
 .exchange-status:disabled { cursor: wait; opacity: .7; }
 .exchange-status.stale::before { background: #e9b34d; box-shadow: 0 0 0 4px rgba(233,179,77,.12); }
+.total-card-main { display: flex; flex-wrap: wrap; align-items: center; gap: 22px; position: relative; z-index: 1; margin-top: 18px; }
+.total-card-amount { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+.exchange-panel { flex: 0 0 178px; margin-left: auto; border-left: 1px solid rgba(255,255,255,.14); padding-left: 18px; display: grid; gap: 10px; }
+.exchange-panel-title { font-size: 10px; color: rgba(255,255,255,.58); }
+.exchange-pair { display: grid; gap: 3px; font-variant-numeric: tabular-nums; }
+.exchange-pair strong { font-size: 11px; font-weight: 550; color: rgba(255,255,255,.9); }
+.exchange-pair span { font-size: 11px; color: rgba(255,255,255,.7); white-space: nowrap; }
 .total-value { font-size: clamp(37px, 4.3vw, 58px); line-height: 1; font-weight: 500; letter-spacing: -.055em; margin: 20px 0 15px; font-variant-numeric: tabular-nums; position: relative; z-index: 1; }
+.total-card-amount .total-value { overflow-wrap: anywhere; }
 .change-row { display: flex; align-items: center; gap: 10px; color: rgba(255,255,255,.7); font-size: 13px; }
 .change-pill { border-radius: 30px; background: rgba(194,202,255,.19); color: #d8ddff; padding: 5px 9px; }
 .mini-stats { border-top: 1px solid rgba(255,255,255,.12); margin-top: 26px; padding-top: 19px; display: grid; grid-template-columns: 1fr 1fr; position: relative; z-index: 1; }
@@ -319,6 +327,11 @@ footer b { color: #5b6961; }
   .total-value { font-size: 38px; }
   .card-label { align-items: flex-start; gap: 14px; }
   .exchange-status { text-align: right; }
+  .total-card-main { gap: 20px; }
+  .total-card-amount { flex-basis: 100%; }
+  .exchange-panel { flex: 1 1 100%; margin-left: 0; border-left: 0; border-top: 1px solid rgba(255,255,255,.14); padding: 15px 0 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .exchange-panel-title { grid-column: 1 / -1; }
+  .exchange-pair span { white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
   .allocation-body { grid-template-columns: 116px 1fr; gap: 18px; }
   .donut { width: 112px; height: 112px; }
   .donut::before { width: 74px; height: 74px; }
