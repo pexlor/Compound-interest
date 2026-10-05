@@ -1,4 +1,4 @@
-// 资产仪表盘：展示持仓、行情、分布、历史走势、收益预测和退休目标。
+// 资产仪表盘：通过独立导航视图展示总览、持仓、月收入、资产预测和历史。
 
 "use client";
 
@@ -152,19 +152,35 @@ function StarMapMark() {
   </svg></span>;
 }
 
+// navigationPages 定义各独立页面的地址、导航名称与页面标题。
+const navigationPages = [
+  { hash: "#overview", label: "总览", title: "看看财富生长到哪里了" },
+  { hash: "#assets", label: "资产", title: "管理你的每一笔资产" },
+  { hash: "#income", label: "月收入记录", title: "记录工资、年终奖与期权" },
+  { hash: "#forecast", label: "资产预测", title: "设定退休目标，查看资产预测" },
+  { hash: "#history", label: "历史", title: "回顾资产走过的轨迹" },
+] as const;
+
+// readNavigationPage 将有效页面地址映射为独立视图，首页及未知地址返回总览。
+function readNavigationPage() {
+  return navigationPages.find(/* 按当前地址匹配导航页面。 */ page => page.hash === window.location.hash) ?? navigationPages[0];
+}
+
 // Dashboard 承载资产星图的登录态、资产、预测和退休目标界面。
 export default function Dashboard() {
-  const [activeNav, setActiveNav] = useState(window.location.hash || "#overview");
-  useEffect(/* 同步锚点导航与浏览器前进、后退，让下划线跟随当前导航项。 */ () => {
-    // syncNavigation 将首页或未知锚点归到总览，其余锚点对应各导航项。
+  const [activePage, setActivePage] = useState(readNavigationPage);
+  const activeNav = activePage.hash;
+  useEffect(/* 同步独立页面地址，支持直接打开、刷新及浏览器前进和后退。 */ () => {
+    // syncNavigation 按当前地址切换唯一可见页面。
     function syncNavigation() {
-      const hash = window.location.hash;
-      setActiveNav(["#assets", "#forecast", "#history"].includes(hash) ? hash : "#overview");
+      setActivePage(readNavigationPage());
     }
-    syncNavigation();
     window.addEventListener("hashchange", syncNavigation);
-    return /* 卸载时移除锚点监听，避免重复更新。 */ () => window.removeEventListener("hashchange", syncNavigation);
+    return /* 卸载时移除页面导航监听。 */ () => window.removeEventListener("hashchange", syncNavigation);
   }, []);
+  useEffect(/* 切换页面后回到顶部，避免沿用上一页面的滚动位置。 */ () => {
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, [activeNav]);
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [assetsLoading, setAssetsLoading] = useState(false);
@@ -610,14 +626,11 @@ export default function Dashboard() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#top" aria-label="资产星图首页">
+        <a className="brand" href="#overview" aria-label="资产星图首页">
           <StarMapMark /><span>资产星图</span>
         </a>
         <nav aria-label="主要导航">
-          <a className={activeNav === "#overview" ? "nav-active" : ""} aria-current={activeNav === "#overview" ? "location" : undefined} href="#overview" onClick={/* 点击时立即更新总览的选中状态。 */ () => setActiveNav("#overview")}>总览</a>
-          <a className={activeNav === "#assets" ? "nav-active" : ""} aria-current={activeNav === "#assets" ? "location" : undefined} href="#assets" onClick={/* 点击时立即更新资产的选中状态。 */ () => setActiveNav("#assets")}>资产</a>
-          <a className={activeNav === "#forecast" ? "nav-active" : ""} aria-current={activeNav === "#forecast" ? "location" : undefined} href="#forecast" onClick={/* 点击时立即更新预测的选中状态。 */ () => setActiveNav("#forecast")}>预测</a>
-          <a className={activeNav === "#history" ? "nav-active" : ""} aria-current={activeNav === "#history" ? "location" : undefined} href="#history" onClick={/* 点击时立即更新历史的选中状态。 */ () => setActiveNav("#history")}>历史</a>
+          {navigationPages.map(/* 渲染独立页面入口，并标记当前所在页面。 */ page => <a key={page.hash} className={activeNav === page.hash ? "nav-active" : ""} aria-current={activeNav === page.hash ? "page" : undefined} href={page.hash}>{page.label}</a>)}
         </nav>
         <div className="header-actions">
           <div className="user-chip"><span className="avatar">{user.displayName.slice(0, 1)}</span><span className="user-meta"><strong>{user.displayName}</strong><small>{user.email}</small></span></div>
@@ -631,13 +644,13 @@ export default function Dashboard() {
       <section className="content" id="top">
         <div className="welcome-row">
           <div>
-            <p className="eyebrow">{new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })} · 资产总览</p>
-            <h1>{user.displayName}，看看财富生长到哪里了</h1>
+            <p className="eyebrow">{new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Shanghai" })} · {activePage.label}</p>
+            <h1>{user.displayName}，{activePage.title}</h1>
           </div>
           <button className="primary-button" onClick={/* 更新新增资产弹窗的显示状态。 */ () => setModalOpen(true)}><span>＋</span> 记录资产</button>
         </div>
 
-        <section className="summary-grid" id="overview">
+        <section className="summary-grid" id="overview" hidden={activeNav !== "#overview"} aria-label="资产总览">
           <article className="total-card">
             <div className="card-label"><span>总资产 · 折合人民币</span><button className={`exchange-status${exchangeOutdated ? " stale" : ""}`} onClick={refreshExchangeRates} disabled={exchangeLoading}>{exchangeLoading ? "正在读取汇率…" : exchangeDate ? `${exchangeDate}${exchangeOutdated ? " · 旧数据" : ""} · 刷新汇率` : "读取汇率缓存"}</button></div>
             <div className="total-card-main">
@@ -667,7 +680,11 @@ export default function Dashboard() {
               </div> : <div className="unavailable-state">等待完整汇率后显示配置</div>}
               {!missingExchangeRate && <div className={`allocation-list${allocationMode === "asset" ? " detailed" : ""}`}>
                 {allocationSegments.map(/* 渲染资产分布项的交互按钮，允许筛选类别或选择资产。 */ (item) => <button key={item.key} title={item.label} onClick={/* 更新资产类别筛选与选中的资产。 */ () => {
-                  if (allocationMode === "category") setActiveFilter(item.key as Category);
+                  if (allocationMode === "category") {
+                    setActiveFilter(item.key as Category);
+                    setAssetPage(0);
+                    window.location.hash = "#assets";
+                  }
                   else setSelected(assetAllocations.find(/* 根据分布图选项找到对应的资产。 */ (allocation) => String(allocation.asset.id) === item.key)?.asset ?? null);
                   }}>
                   <span className="legend-dot" style={{ background: item.color }} />
@@ -678,7 +695,13 @@ export default function Dashboard() {
           </article>
         </section>
 
-        <section className="forecast-card" id="forecast">
+        <section className="income-page" id="income" hidden={activeNav !== "#income"} aria-label="月收入记录">
+          <div className="section-heading"><div><span className="card-kicker">月收入记录</span><h2>工资、年终奖与期权</h2></div></div>
+          <p className="page-description">记录月工资与预计储蓄，安排年终奖和期权到账；保存后用于资产预测。</p>
+          <IncomePlanner key={`${user?.id}:${income.version}`} income={income} saving={savingIncome} onSave={saveIncome} />
+        </section>
+
+        <section className="forecast-card" id="forecast" hidden={activeNav !== "#forecast"} aria-label="资产预测">
           <div className="forecast-copy">
             <span className="card-kicker">稳健资产情景</span>
             <h2>{horizon} 年后，预计拥有</h2>
@@ -692,7 +715,6 @@ export default function Dashboard() {
               <button disabled={savingRetirement}>{savingRetirement ? "添加中…" : "添加目标资产"}</button>
               {(retirement?.items ?? []).length > 0 && <ul className="retirement-items">{retirement!.items.map(/* 删除当前退休目标明细，并更新计划进度。 */ item=><li key={item.id}><span>{item.name} · {item.category}</span><b>{money(item.currency === "CNY" ? item.amount : 0)} {item.currency}</b><button type="button" onClick={/* 删除当前退休目标明细，并更新计划进度。 */ ()=>void removeRetirementItem(item)}>删除</button></li>)}</ul>}
             </form>
-            <IncomePlanner key={`${user?.id}:${income.version}`} income={income} saving={savingIncome} onSave={saveIncome} />
             <div className="control-block">
               <span>预测到未来</span>
               <div className="segmented">{[1, 3, 5, 10, 20, 30].map(/* 为每个可选预测年限渲染切换按钮。 */ (year) => <button className={horizon === year ? "active" : ""} key={year} onClick={/* 更新收益预测年限。 */ () => setHorizon(year)}>{year}年</button>)}</div>
@@ -705,9 +727,11 @@ export default function Dashboard() {
           <ForecastPanel key={user.id} data={forecastData} loading={forecastLoading} error={forecastError} assets={assets} scenario={scenario} onChange={changeScenario} years={horizon} />
         </section>
 
-        <HistorySection history={history} />
+        <div hidden={activeNav !== "#history"}>
+          <HistorySection history={history} />
+        </div>
 
-        <section className="assets-section" id="assets">
+        <section className="assets-section" id="assets" hidden={activeNav !== "#assets"} aria-label="我的资产">
           <div className="section-heading"><div><span className="card-kicker">我的资产</span><h2>每一笔，都心中有数</h2></div><div className="section-actions"><span>{assets.length} 项资产</span><button className="primary-button compact" onClick={/* 更新新增资产弹窗的显示状态。 */ () => setModalOpen(true)}><span>＋</span> 记录资产</button></div></div>
           <div className="filter-row">
             <button className={activeFilter === "all" ? "active" : ""} onClick={/* 更新资产类别筛选与资产列表页码。 */ () => { setActiveFilter("all"); setAssetPage(0); }}>全部</button>
