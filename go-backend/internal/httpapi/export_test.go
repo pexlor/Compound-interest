@@ -129,7 +129,7 @@ func TestExportRejectsInvalidRequests(t *testing.T) {
 	if _, e := db.Exec(`INSERT INTO assets(id,user_id,name,category,amount,currency) VALUES(1,2,'other','deposit',100,'CNY')`); e != nil {
 		t.Fatal(e)
 	}
-	for _, tc := range []struct {
+	for _, tc := range [] /* 描述无效请求及预期拒绝状态。 */ struct {
 		path, method string
 		cookie       *http.Cookie
 		status       int

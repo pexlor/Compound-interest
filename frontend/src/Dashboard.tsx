@@ -217,9 +217,13 @@ export default function Dashboard() {
 
   useEffect(/* 首次挂载及登录身份变化时读取仪表盘，清理旧请求以避免迟到响应覆盖。 */ () => {
     const controller = new AbortController();
+    setRetirement(null);
     fetch("/api/dashboard", { signal: controller.signal })
       .then(/* 校验仪表盘接口状态并解析返回数据，未登录时返回空结果。 */ async (response) => {
-        if (response.status === 401) return null;
+        if (response.status === 401) {
+          if (!controller.signal.aborted) setUser(null);
+          return null;
+        }
         const data = await response.json() as /* 定义仪表盘接口返回的用户、持仓、历史、收入和汇率数据。 */ {
           user?: User; assets?: Asset[]; history?: HistoryEntry[]; income?: IncomeSettings;
           rates?: Partial<Record<Currency, number>>; date?: string; stale?: boolean; error?: string; marketResults?: MarketReturnMeta[];
@@ -237,7 +241,10 @@ export default function Dashboard() {
         setExchangeRates(dashboard.rates ?? { CNY: 1 });
         setExchangeDate(dashboard.date ?? "");
         setExchangeStale(Boolean(dashboard.stale));
-        void fetch("/api/retirement").then(/* 仅在接口成功时解析退休计划数据。 */ (response) => response.ok ? response.json() as Promise<Retirement> : null).then(/* 读取到有效退休计划后更新界面状态。 */ (goal) => { if (goal) setRetirement(goal); });
+        void fetch("/api/retirement", { signal: controller.signal })
+          .then(/* 仅在接口成功时解析退休计划数据。 */ (response) => response.ok ? response.json() as Promise<Retirement> : null)
+          .then(/* 身份已切换时不再应用旧账号的退休目标。 */ (goal) => { if (goal && !controller.signal.aborted) setRetirement(goal); })
+          .catch(/* 取消或读取失败时保持空目标，不产生未处理异常。 */ () => {});
       })
       .catch(/* 仅处理仍有效的读取失败，取消的旧请求不改变登录态。 */ () => { if (!controller.signal.aborted) setUser(null); })
       .finally(/* 读取失败时清除登录态，让界面回到登录入口。 */ () => {
