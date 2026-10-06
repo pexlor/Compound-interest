@@ -656,7 +656,13 @@ export default function Dashboard() {
             <div className="total-card-main">
               <div className="total-card-amount">
                 <div className="total-value">{missingExchangeRate ? "行情或汇率暂不可用" : money(total)}</div>
-                <div className="change-row"><span className="change-pill">汇率折算</span><span title={monthlyForecast?`${forecastData?.asOf} 至 ${monthlyForecast.date}：投资收益 ${money(monthlyForecast.investmentGain)} + 到账本金 ${money(monthlyForecast.contributions)}`:undefined}>本月剩余预估增长 {monthlyForecast?money(monthlyForecast.totalGain):forecastLoading?"正在计算":"等待预测数据"}</span><small className="month-breakdown">{monthlyForecast?`投资收益 ${money(monthlyForecast.investmentGain)} · 到账本金 ${money(monthlyForecast.contributions)}`:""}</small></div>
+                <div className="change-row">
+                  <span className="change-pill">汇率折算</span>
+                  <div className="month-forecast-copy">
+                    <span title={monthlyForecast?`${forecastData?.asOf} 至 ${monthlyForecast.date}：投资收益 ${money(monthlyForecast.investmentGain)} + 到账本金 ${money(monthlyForecast.contributions)}`:undefined}>本月剩余预估增长 {monthlyForecast?money(monthlyForecast.totalGain):forecastLoading?"正在计算":"等待预测数据"}</span>
+                    <small className="month-breakdown">{monthlyForecast?`投资收益 ${money(monthlyForecast.investmentGain)} · 到账本金 ${money(monthlyForecast.contributions)}`:""}</small>
+                  </div>
+                </div>
               </div>
               <aside className="exchange-panel" aria-label="人民币、美元、港元双向汇率" aria-live="polite">
                 <span className="exchange-panel-title">{exchangeDate && !exchangeOutdated ? "今日汇率" : "最新可用汇率"}</span>

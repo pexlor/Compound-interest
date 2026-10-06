@@ -76,6 +76,7 @@ h2 { margin: 4px 0 0; font-family: Georgia, "Songti SC", serif; font-size: 25px;
 .total-value { font-size: clamp(37px, 4.3vw, 58px); line-height: 1; font-weight: 500; letter-spacing: -.055em; margin: 20px 0 15px; font-variant-numeric: tabular-nums; position: relative; z-index: 1; }
 .total-card-amount .total-value { overflow-wrap: anywhere; }
 .change-row { display: flex; align-items: center; gap: 10px; color: rgba(255,255,255,.7); font-size: 13px; }
+.month-forecast-copy { display: flex; flex-direction: column; min-width: 0; }
 .change-pill { border-radius: 30px; background: rgba(194,202,255,.19); color: #d8ddff; padding: 5px 9px; }
 .mini-stats { border-top: 1px solid rgba(255,255,255,.12); margin-top: 26px; padding-top: 19px; display: grid; grid-template-columns: 1fr 1fr; position: relative; z-index: 1; }
 .mini-stats div { display: flex; flex-direction: column; gap: 7px; }
