@@ -25,7 +25,7 @@
 
 | 项目 | 当前配置 |
 |---|---|
-| SSH | `root@192.168.2.1`，使用 SSH 密钥或交互输入密码 |
+| SSH | `root@192.168.2.1`，使用 SSH 密钥或交互输入密码（密码：WHRDqw8mpFtqXtL） |
 | 系统 / 架构 | OpenWrt / `aarch64`，构建目标 `linux/arm64` |
 | 页面及 API | `http://192.168.2.1:3000`，同一个 Go 进程提供 |
 | 服务管理 | `/etc/init.d/fulibu`，OpenWrt `procd` |
