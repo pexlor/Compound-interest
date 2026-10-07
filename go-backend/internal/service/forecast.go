@@ -113,6 +113,18 @@ func prepareForecastModel(in ForecastInput, o ForecastOptions) (forecastModel, e
 	own := make([]map[string]float64, len(in.Assets))
 	base := make([]map[string]float64, len(in.Assets))
 	all := []map[string]float64{}
+	monthly := map[string]map[string]float64{}
+	// historyReturns 在同一快照内复用证券及基准月收益，多项持仓只解析一次相同日线。
+	historyReturns := func(key string) (map[string]float64, error) {
+		if values, ok := monthly[key]; ok {
+			return values, nil
+		}
+		values, err := MonthlyReturns(in.History[key], in.AsOf)
+		if err == nil {
+			monthly[key] = values
+		}
+		return values, err
+	}
 	for i, a := range in.Assets {
 		if a.Amount < 0 || !finiteRange(a.AnnualRate, -100, 1000) {
 			return m, fmt.Errorf("资产金额或利率无效")
@@ -127,7 +139,7 @@ func prepareForecastModel(in ForecastInput, o ForecastOptions) (forecastModel, e
 				return m, fmt.Errorf("%s 请先选择预测基准", a.Name)
 			}
 			var err error
-			base[i], err = MonthlyReturns(in.History[a.Class], in.AsOf)
+			base[i], err = historyReturns(a.Class)
 			if err != nil {
 				return m, err
 			}
@@ -137,7 +149,7 @@ func prepareForecastModel(in ForecastInput, o ForecastOptions) (forecastModel, e
 			if len(in.History[a.Key]) < 2 {
 				return m, fmt.Errorf("%s 缺少本币总收益历史", a.Name)
 			}
-			own[i], err = MonthlyReturns(in.History[a.Key], in.AsOf)
+			own[i], err = historyReturns(a.Key)
 			if err != nil {
 				return m, err
 			}
@@ -336,7 +348,7 @@ func percentileMinor(values []float64, q float64) int64 {
 	return int64(math.Round(values[int(math.Round(q*float64(len(values)-1)))]))
 }
 
-// SimulateForecast 执行固定种子的5000条三月联合抽样路径，分别累积资产和未来现金本金。
+// SimulateForecast 执行固定种子的5000条联合路径，复用共享收益因子与工作缓冲区，保持原金额和抽样口径。
 func SimulateForecast(in ForecastInput, o ForecastOptions) (ForecastResult, error) {
 	o.IncludeRestricted = true
 	out := ForecastResult{State: "ready", Model: "joint-block-v1", AsOf: in.AsOf.Format("2006-01-02"), Options: o, Warnings: []string{}, Missing: []string{}, ValuationBasis: "stored_assets"}
@@ -376,28 +388,45 @@ func SimulateForecast(in ForecastInput, o ForecastOptions) (ForecastResult, erro
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	execution, err := prepareForecastExecution(ctx, in, o, m, checkpoints, forecastGrowthBudget)
+	if err != nil {
+		return out, err
+	}
+	initialBalances := make([]float64, len(in.Assets))
+	for i, a := range in.Assets {
+		initialBalances[i] = float64(a.Amount)
+	}
+	balances := make([]float64, len(in.Assets))
+	fx := make([]float64, len(execution.InitialFX))
+	rng := rand.New(rand.NewSource(20261005))
+	for year := 1; year <= o.Years; year++ {
+		values[year] = make([]float64, 0, o.Paths)
+		liquid[year] = make([]float64, 0, o.Paths)
+		contrib[year] = make([]float64, 0, o.Paths)
+	}
+	for i := range assetValues {
+		assetValues[i] = make([]float64, 0, o.Paths)
+	}
+	monthValues = make([]float64, 0, o.Paths)
+	monthContrib = make([]float64, 0, o.Paths)
+	hits = make([]float64, 0, o.Paths)
 	for path := 0; path < o.Paths; path++ {
-		rng := rand.New(rand.NewSource(20261005 + int64(path)))
+		rng.Seed(20261005 + int64(path))
 		if path%32 == 0 {
 			if err := ctx.Err(); err != nil {
 				return out, err
 			}
 		}
-		balances := make([]float64, len(in.Assets))
-		for i, a := range in.Assets {
-			balances[i] = float64(a.Amount)
-		}
-		fx := map[string]float64{}
-		for c, r := range in.Rates {
-			fx[c] = r
-		}
+		copy(balances, initialBalances)
+		copy(fx, execution.InitialFX)
 		cash := 0.0
 		firstHit := -1.0
 		if in.Target > 0 && liquidTotal >= float64(in.Target) {
 			firstHit = 0
 		}
 		selectedMonth, index := -1, 0
-		for _, p := range checkpoints {
+		for stepIndex := range execution.Steps {
+			p := &execution.Steps[stepIndex]
 			if p.Month != selectedMonth {
 				selectedMonth = p.Month
 				if len(m.Starts) > 0 {
@@ -408,41 +437,56 @@ func SimulateForecast(in ForecastInput, o ForecastOptions) (ForecastResult, erro
 					}
 				}
 			}
+			var growth []float64
+			if len(p.Growth) > 0 {
+				growth = p.Growth[index*execution.Columns : (index+1)*execution.Columns]
+			}
 			for i := range balances {
-				logReturn := m.Drift[i]
-				if len(m.Months) > 0 {
-					logReturn += m.Residual[i][index]
+				factor := 0.0
+				if growth != nil {
+					factor = growth[i]
+				} else {
+					logReturn := m.Drift[i]
+					if len(m.Months) > 0 {
+						logReturn += m.Residual[i][index]
+					}
+					factor = math.Exp(logReturn * p.Fraction)
 				}
-				balances[i] *= math.Exp(logReturn * p.Fraction)
+				balances[i] *= factor
 				if math.IsNaN(balances[i]) || math.IsInf(balances[i], 0) || balances[i] > 9e15 {
 					return out, fmt.Errorf("本币模拟金额超出范围，请缩短预测期限")
 				}
 			}
-			for c, changes := range m.FX {
-				fx[c] *= math.Exp(changes[index] * p.Fraction)
+			for i, c := range execution.FXCurrencies {
+				factor := 0.0
+				if growth != nil {
+					factor = growth[len(balances)+i]
+				} else {
+					factor = math.Exp(execution.FXChanges[i][index] * p.Fraction)
+				}
+				fx[c] *= factor
 			}
-			for _, e := range p.Events {
-				if e.Amount < 0 || !positiveFinite(fx[e.Currency]) {
+			for i, e := range p.Events {
+				c := p.EventCurrencies[i]
+				if e.Amount < 0 || c < 0 || !positiveFinite(fx[c]) {
 					return out, fmt.Errorf("现金流金额或汇率无效")
 				}
-				cash += float64(e.Amount) * fx[e.Currency]
+				cash += float64(e.Amount) * fx[c]
 			}
 			if p.Savings {
 				cash += float64(in.MonthlySavings)
 			}
 			v, lv := cash, cash
-			for i, a := range in.Assets {
-				amount := balances[i] * fx[a.Currency]
+			for i, c := range execution.AssetCurrencies {
+				amount := balances[i] * fx[c]
 				v += amount
 				lv += amount
 			}
 			if math.IsNaN(v) || math.IsInf(v, 0) || v > 9e15 || v < 0 {
 				return out, fmt.Errorf("模拟金额超出范围，请缩短预测期限")
 			}
-			elapsed := p.Date.Sub(in.AsOf).Hours() / 24 / 365.25
-			target := float64(in.Target) * math.Pow(1+o.Inflation/100, elapsed)
-			if firstHit < 0 && in.Target > 0 && lv >= target {
-				firstHit = p.Date.Sub(in.AsOf).Hours() / 24
+			if firstHit < 0 && in.Target > 0 && lv >= p.Target {
+				firstHit = p.Days
 			}
 			if p.MonthReport {
 				monthValues = append(monthValues, v)
